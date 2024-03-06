@@ -1,0 +1,23 @@
+export type CreateMovieDto = {
+  readonly addedDate: string;
+  readonly ageRating: number;
+  readonly backdropUrl: string;
+  readonly compactPosterUrl: string;
+  readonly countries: string[];
+  readonly description: string;
+  readonly director: string[];
+  readonly enName: string;
+  readonly extension: string;
+  readonly genres: string[];
+  readonly isSeries: boolean;
+  readonly kpId: number;
+  readonly posterUrl: string;
+  readonly name: string;
+  readonly movieLength: number;
+  readonly actors: string[];
+  readonly quality: string;
+  readonly rating: number;
+  readonly year: string;
+  readonly sequelsAndPrequels: string[];
+  readonly similarMovies: string[];
+};
