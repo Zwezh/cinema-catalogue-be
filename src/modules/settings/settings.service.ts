@@ -1,8 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Settings } from './schemas';
-import { Model } from 'mongoose';
 import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import { SettingsDto } from './dto';
+import { Settings } from './schemas';
 
 @Injectable()
 export class SettingsService {

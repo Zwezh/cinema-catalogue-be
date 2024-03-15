@@ -2,8 +2,15 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
 export type MovieDocument = HydratedDocument<Movie>;
+const transform = (doc, ret) => {
+  ret.id = ret._id;
+  delete ret._id;
+};
 
-@Schema()
+@Schema({
+  versionKey: false,
+  toJSON: { transform },
+})
 export class Movie {
   @Prop()
   addedDate: string;
@@ -17,13 +24,13 @@ export class Movie {
   countries: string[];
   @Prop()
   description: string;
-  @Prop()
+  @Prop({ type: [String] })
   director: string[];
   @Prop()
   enName: string;
   @Prop()
   extension: string;
-  @Prop()
+  @Prop({ type: [String] })
   genres: string[];
   @Prop()
   id: string;
@@ -37,14 +44,14 @@ export class Movie {
   name: string;
   @Prop()
   movieLength: number;
-  @Prop()
+  @Prop({ type: [String] })
   actors: string[];
   @Prop()
   quality: string;
   @Prop()
   rating: number;
-  @Prop()
-  year: string;
+  @Prop({ type: [Number] })
+  year: number | number[];
   @Prop()
   sequelsAndPrequels: string[];
   @Prop()

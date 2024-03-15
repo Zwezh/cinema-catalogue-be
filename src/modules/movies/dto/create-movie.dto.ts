@@ -17,7 +17,7 @@ export type CreateMovieDto = {
   readonly actors: string[];
   readonly quality: string;
   readonly rating: number;
-  readonly year: string;
+  readonly year: number | number[];
   readonly sequelsAndPrequels: string[];
   readonly similarMovies: string[];
 };
