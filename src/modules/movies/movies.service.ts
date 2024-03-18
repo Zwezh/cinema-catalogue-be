@@ -67,10 +67,13 @@ export class MoviesService {
     return this.movieModel.findById(id).exec();
   }
 
-  async update(id: string, movieDto: MovieDto): Promise<Movie> {
-    const movie = await this.movieModel.findByIdAndUpdate(id, movieDto);
+  async update(movieDto: MovieDto): Promise<Movie> {
+    const movie = await this.movieModel.findByIdAndUpdate(
+      movieDto.id,
+      movieDto,
+    );
     if (!movie) {
-      throw new NotFoundException(`Moive #${id} not found`);
+      throw new NotFoundException(`Moive #${movieDto.id} not found`);
     }
     return movie;
   }

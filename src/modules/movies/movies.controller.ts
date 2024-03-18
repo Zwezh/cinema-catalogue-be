@@ -45,9 +45,9 @@ export class MoviesController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Put(':id')
-  async put(@Param('id') id: string, @Body() movieDto: MovieDto) {
-    return this.moviesService.update(id, movieDto);
+  @Put()
+  async put(@Body() movieDto: MovieDto) {
+    return this.moviesService.update(movieDto);
   }
 
   @UseGuards(JwtAuthGuard)
