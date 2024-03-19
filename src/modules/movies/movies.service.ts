@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
@@ -16,6 +20,12 @@ export class MoviesService {
   ) {}
 
   async create(movieDto: CreateMovieDto): Promise<Movie> {
+    const isExist = await this.movieModel
+      .findOne({ kpId: movieDto.kpId })
+      .exec();
+    if (isExist) {
+      throw new ConflictException('A movie with the same name already exists.');
+    }
     const movie = await this.movieModel.create(movieDto);
     return movie;
   }
