@@ -31,7 +31,15 @@ Implement in small, independently verified batches. Preserve existing working-tr
 
 Implemented: transactional legacy catalog preservation and rollback; independent seeding under a write lock; unique kpId index and HTTP 409 mapping; bounded runtime query validation; snapshot count/list reads and stable ordering; atomic update/delete responses; boolean settings defaults; typed JWT principal compatible with existing tokens; strict TypeScript and nullable contracts. Regression tests cover these behaviors.
 
-Remaining: complete body validation, login throttling and token revocation, repository/import refactoring, Unicode search, deployment migrations, and operational configuration. These remain the next planned batches; first-batch completion does not resolve the full review.
+## Further implementation status
+
+Implemented runtime body validation, nested catalogs, exact catalog membership at movie write time, database-backed login throttling, one-hour subject tokens with credential-change revocation, and explicit singleton administrator validation. Existing old-format tokens require reauthentication.
+
+Extracted focused movie/settings/auth repositories; shared movie mapping with imports; validated stored JSON; used atomic mutation responses and settings writes. Added Unicode-normalized name/people search with literal wildcard handling and transactional backfill.
+
+Added schema version checks and an explicit migration command, with production startup performing version verification by default. Rebuilt import validation and parameterized inputs; import data writes are atomic and catalog reset/repair is explicit. Added environment validation, port/CORS/proxy configuration, client cleanup, setup/recovery documentation, and CI checks. Removed dead authentication code and enabled the no-explicit-any lint rule.
+
+Conditional follow-ups: benchmark production-scale data before choosing full-text search, normalized relationship tables or cursor pagination. Optimistic concurrency requires a version/ETag contract with frontend support; current full-document edits retain last-write-wins behavior. Large imports may need staging/resumability after measuring transaction limits. These are documented design decisions, not unimplemented fixes for the reproduced defects.
 
 ## Validation and rollout
 

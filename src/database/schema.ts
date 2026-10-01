@@ -1,3 +1,5 @@
+import { normalizeSearch } from './search';
+import { storedStringArray } from './json';
 import type { Client, InStatement } from '@libsql/client';
 
 export type ExtensionOptionRecord = {
@@ -27,6 +29,13 @@ export const defaultExtensions: readonly ExtensionOptionRecord[] = [
 ];
 
 const coreSchemaStatements = [
+  `CREATE TABLE IF NOT EXISTS login_attempts (
+    client_key TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_login_attempts_expiration ON login_attempts(expires_at)',
+
   `CREATE TABLE IF NOT EXISTS auth (
     id TEXT PRIMARY KEY,
     secret_key TEXT NOT NULL
@@ -90,6 +99,19 @@ const settingsCatalogStatements = [
 ];
 
 export async function initializeDatabase(client: Client): Promise<void> {
+  const ledger = await client.execute(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+  );
+  if (ledger.rows.length) {
+    const current = await client.execute(
+      'SELECT MAX(version) AS version FROM schema_migrations',
+    );
+    if (Number(current.rows[0].version) > databaseSchemaVersion) {
+      throw new Error(
+        'Database schema is newer than this application; downgrade migration refused',
+      );
+    }
+  }
   await client.batch(coreSchemaStatements, 'write');
   await migrateLegacySettings(client);
   await client.batch(settingsCatalogStatements, 'write');
@@ -116,6 +138,7 @@ export async function initializeDatabase(client: Client): Promise<void> {
   } finally {
     transaction.close();
   }
+  await migrateSearchColumns(client);
 }
 
 export function replaceCatalogStatements(
@@ -214,7 +237,7 @@ function parseLegacyCatalog(
       !('value' in entry) ||
       typeof entry.value !== 'string' ||
       !entry.value.trim() ||
-      values.has(entry.value) ||
+      values.has(entry.value.trim().toLowerCase()) ||
       ('default' in entry && typeof entry.default !== 'boolean') ||
       (requiresTitle &&
         (!('title' in entry) ||
@@ -223,10 +246,86 @@ function parseLegacyCatalog(
     ) {
       throw new Error('Invalid legacy catalog; migration aborted');
     }
-    values.add(entry.value);
+    values.add(entry.value.trim().toLowerCase());
     if ('default' in entry && entry.default === true) defaults++;
   }
   if (defaults !== 1)
     throw new Error('Legacy catalog must have one default; migration aborted');
   return parsed as ExtensionOptionRecord[];
+}
+
+export const databaseSchemaVersion = 2;
+
+async function migrateSearchColumns(client: Client): Promise<void> {
+  const transaction = await client.transaction('write');
+  try {
+    await transaction.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+    )`);
+    const columns = await transaction.execute('PRAGMA table_info(movies)');
+    const additions = [
+      ['name_search', "TEXT NOT NULL DEFAULT ''"],
+      ['actors_search_json', "TEXT NOT NULL DEFAULT '[]'"],
+      ['director_search_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ] as const;
+    const missing = additions.filter(
+      ([name]) => !columns.rows.some((column) => column.name === name),
+    );
+    for (const [name, definition] of missing)
+      await transaction.execute(
+        `ALTER TABLE movies ADD COLUMN ${name} ${definition}`,
+      );
+    if (missing.length > 0) {
+      const movies = await transaction.execute(
+        'SELECT id, name, actors_json, director_json FROM movies',
+      );
+      for (const movie of movies.rows) {
+        await transaction.execute({
+          sql: 'UPDATE movies SET name_search = ?, actors_search_json = ?, director_search_json = ? WHERE id = ?',
+          args: [
+            normalizeSearch(String(movie.name)),
+            JSON.stringify(
+              storedStringArray(movie.actors_json, 'actors_json').map(
+                normalizeSearch,
+              ),
+            ),
+            JSON.stringify(
+              storedStringArray(movie.director_json, 'director_json').map(
+                normalizeSearch,
+              ),
+            ),
+            String(movie.id),
+          ],
+        });
+      }
+    }
+    await transaction.batch(
+      [1, databaseSchemaVersion].map((version) => ({
+        sql: 'INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+        args: [version, new Date().toISOString()],
+      })),
+    );
+    await transaction.commit();
+  } finally {
+    transaction.close();
+  }
+}
+
+export async function assertDatabaseVersion(client: Client): Promise<void> {
+  const exists = await client.execute(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+  );
+  if (!exists.rows.length)
+    throw new Error('Database migrations are required; run npm run migrate');
+  const result = await client.execute(
+    'SELECT version FROM schema_migrations ORDER BY version',
+  );
+  if (
+    result.rows.length !== databaseSchemaVersion ||
+    result.rows.some((row, index) => Number(row.version) !== index + 1)
+  ) {
+    throw new Error(
+      'Database schema version does not match this application; run the matching migrations',
+    );
+  }
 }

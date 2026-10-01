@@ -1,3 +1,4 @@
+import { validateEnvironment } from './config/environment';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
@@ -6,7 +7,7 @@ import { AuthModule, MoviesModule, SettingsModule } from './modules';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     DatabaseModule,
     AuthModule,
     MoviesModule,
