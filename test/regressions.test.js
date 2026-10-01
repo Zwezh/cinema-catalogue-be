@@ -609,6 +609,35 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     .expect(201);
   const token = login.body.access_token;
   await http.post('/api/movies').send(movie).expect(401);
+  const {
+    KinopoiskClient,
+  } = require('../src/modules/kinopoisk/kinopoisk.client');
+  let providerCalls = 0;
+  app.get(KinopoiskClient).getMovie = async (id) => {
+    providerCalls++;
+    return {
+      id,
+      name: 'Provider title',
+      persons: [{ enProfession: 'actor', enName: 'Actor' }],
+      token: 'must-not-leak',
+    };
+  };
+  await http.get('/api/kinopoisk/movies/301/autofill').expect(401);
+  assert.equal(providerCalls, 0);
+  await http
+    .get('/api/kinopoisk/movies/NaN/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(400);
+  assert.equal(providerCalls, 0);
+  const metadata = await http
+    .get('/api/kinopoisk/movies/301/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(200);
+  assert.equal(metadata.body.kpId, 301);
+  assert.deepEqual(metadata.body.actors, ['Actor']);
+  assert.equal(metadata.body.token, undefined);
+  assert.equal(metadata.body.id, undefined);
+  assert.equal(providerCalls, 1);
   await http
     .post('/api/movies')
     .auth(token, { type: 'bearer' })
@@ -660,6 +689,11 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     .auth(token, { type: 'bearer' })
     .send(settings.body)
     .expect(401);
+  await http
+    .get('/api/kinopoisk/movies/301/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(401);
+  assert.equal(providerCalls, 1);
   for (let i = 0; i < 7; i++)
     await http.post('/api/auth').send({ secretKey: 'wrong' }).expect(401);
   const limited = await http

@@ -10,6 +10,7 @@ Use Node.js 22.22.3+, 24.15+, or 26+. Node 24 LTS is recommended. Install depend
 | ----------------------- | ------------------------------------------------ | ------------------------------------------------------------ |
 | `TURSO_DATABASE_URL`    | Required                                         | `file:./cinema.db` locally, or a supported remote libSQL URL |
 | `TURSO_AUTH_TOKEN`      | Required for remote production DB                | Database access token                                        |
+| `KINOPOISK_API_TOKEN` | Required for movie autofill; otherwise endpoint returns 503 | Server-only PoiskKino provider key |
 | `JWT_KEY`               | Required, at least 32 bytes                      | Random signing secret; changing it invalidates all tokens    |
 | `NODE_ENV`              | `development`, `test`, or `production`          | Select production migration/token safeguards                 |
 | `PORT`                  | `3000`                                           | HTTP listening port                                          |
@@ -87,3 +88,13 @@ Tests use temporary databases, and the HTTP integration test binds a temporary l
 ## Scaling follow-up
 
 Page size is bounded, but substring/JSON filtering and large offsets still scan entries. Benchmark representative data and production latency before selecting full-text search, indexed relationship tables, or a versioned cursor API. Those changes are conditional on measured needs and are not silently introduced into the existing pagination contract. Concurrent full-document edits currently use last-write-wins; introduce a version/ETag API with frontend support if edit conflict prevention is required.
+
+## Kinopoisk autofill
+
+Authenticated `GET /api/kinopoisk/movies/:id/autofill` returns normalized editor metadata (`kpId`, titles, artwork, actors/directors, genres/countries, relationships, and optional numeric rating/year/duration/age rating). It does not write the movie collection. The browser sends only its administrator JWT. Configure `KINOPOISK_API_TOKEN` in the ignored server `.env` or deployment secret environment; never put it in frontend environment files. A `.env.example` contains placeholders only.
+
+The focused Kinopoisk module owns the fixed `https://api.poiskkino.dev/v1.4/movie/{id}` request with `X-API-KEY`, provider parsing and mapping. It disallows redirects, times out after ten seconds, and limits JSON responses to 2 MiB. IDs must be positive safe integers. Empty/null optional metadata maps to empty strings/arrays or omitted numbers; the frontend preserves its current draft when metadata is absent. Unknown provider fields are excluded from the response.
+
+An invalid user JWT returns 401; invalid IDs return 400; missing provider configuration returns 503; provider 404 returns 404; timeout returns 504; provider credentials/quota/network/JSON/schema failures return sanitized 502 responses. Provider 401 responses never sign the frontend user out. Keys, provider error bodies and raw network exceptions are not logged or returned. Tests mock provider requests and use temporary databases.
+
+Deploy this backend endpoint before the frontend update. Keys previously embedded in frontend source/bundles need rotation at the provider; Git history removal is not performed automatically. Replace the server environment value with the rotated key and restart the process. Restrict `.env` access to the deployment owner (`chmod 600 .env`) and keep it out of backups shared with others.

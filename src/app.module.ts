@@ -1,3 +1,4 @@
+import { KinopoiskModule } from './modules/kinopoisk/kinopoisk.module';
 import { validateEnvironment } from './config/environment';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -12,6 +13,7 @@ import { AuthModule, MoviesModule, SettingsModule } from './modules';
     AuthModule,
     MoviesModule,
     SettingsModule,
+    KinopoiskModule,
   ],
   controllers: [AppController],
 })

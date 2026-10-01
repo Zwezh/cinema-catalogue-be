@@ -1,6 +1,15 @@
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): Record<string, unknown> {
+  const providerToken = environment.KINOPOISK_API_TOKEN;
+  if (
+    providerToken !== undefined &&
+    (typeof providerToken !== 'string' || !/^[\x21-\x7e]+$/.test(providerToken))
+  ) {
+    throw new Error(
+      'KINOPOISK_API_TOKEN must be a nonempty printable token without whitespace',
+    );
+  }
   const jwtKey = environment.JWT_KEY;
   if (
     typeof jwtKey !== 'string' ||
