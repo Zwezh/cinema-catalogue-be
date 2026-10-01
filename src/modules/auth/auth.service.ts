@@ -1,14 +1,13 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { DatabaseService } from '../../database/database.service';
 import { Auth } from './schemas';
-import { Model } from 'mongoose';
-import { InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectModel(Auth.name) private readonly authModel: Model<Auth>,
+    private readonly database: DatabaseService,
     private jwtService: JwtService,
   ) {}
 
@@ -25,6 +24,13 @@ export class AuthService {
   }
 
   async findSecretKey(): Promise<Auth> {
-    return this.authModel.findOne({ _id: process.env.JWT_KEY }).exec();
+    const result = await this.database.client.execute(
+      'SELECT id, secret_key FROM auth ORDER BY id LIMIT 1',
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new UnauthorizedException();
+    }
+    return { id: String(row.id), secretKey: String(row.secret_key) };
   }
 }

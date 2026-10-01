@@ -1,6 +1,6 @@
 export type CreateMovieDto = {
   readonly addedDate: string;
-  readonly ageRating: number;
+  readonly ageRating: number | null;
   readonly backdropUrl: string;
   readonly compactPosterUrl: string;
   readonly countries: string[];
@@ -9,7 +9,7 @@ export type CreateMovieDto = {
   readonly enName: string;
   readonly extension: string;
   readonly genres: string[];
-  readonly isSeries: boolean;
+  readonly isSeries: boolean | null;
   readonly kpId: number;
   readonly posterUrl: string;
   readonly name: string;

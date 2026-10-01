@@ -34,14 +34,14 @@ export class MoviesController {
     return this.moviesService.findAll(params);
   }
 
+  @Get('genres')
+  findDistinctGenres(): Promise<string[]> {
+    return this.moviesService.findDistinctGenres();
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string): Promise<Movie> {
     return this.moviesService.findOne(id);
-  }
-
-  @Get('genres')
-  async findGenres(): Promise<Partial<string[]>> {
-    return this.moviesService.findAllGenres();
   }
 
   @UseGuards(JwtAuthGuard)
