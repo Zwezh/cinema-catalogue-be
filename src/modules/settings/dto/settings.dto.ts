@@ -1,10 +1,12 @@
 export type QualityOption = {
+  id?: string;
   title: string;
   value: string;
   default?: boolean;
 };
 
 export type ExtensionOption = {
+  id?: string;
   value: string;
   default?: boolean;
 };

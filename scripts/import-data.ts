@@ -2,7 +2,7 @@ import { Client } from '@libsql/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { objectBody, strings, text } from '../src/common/validation';
-import { movieColumns, movieValues } from '../src/database/movie-record';
+import { saveMovie } from '../src/database/movies/movie-writer';
 import {
   defaultExtensions,
   defaultQuality,
@@ -162,19 +162,21 @@ export async function importBackups(
   await initializeDatabase(client);
   const transaction = await client.transaction('write');
   try {
-    const existingAuth = await transaction.execute('SELECT id FROM auth');
+    const existingAuth = await transaction.execute(
+      'SELECT id FROM auth_credentials',
+    );
     if (existingAuth.rows.some((row) => row.id !== data.auth[0].id))
       throw new Error(
         'Existing administrator ID differs from backup; import aborted',
       );
     await transaction.batch(
       data.auth.map((auth) => ({
-        sql: 'INSERT INTO auth (id, secret_key) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET secret_key = excluded.secret_key',
+        sql: 'INSERT INTO auth_credentials (id, secret_key) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET secret_key = excluded.secret_key',
         args: [auth.id, auth.secretKey],
       })),
     );
     await transaction.execute({
-      sql: 'UPDATE settings SET genres_for_filters_json = ? WHERE id = 1',
+      sql: "UPDATE app_settings SET genres_for_filters_json = ? WHERE id = 'settings:default'",
       args: [JSON.stringify(data.genres)],
     });
     const catalogs = resetCatalogs
@@ -184,19 +186,7 @@ export async function importBackups(
       await transaction.batch(
         replaceCatalogStatements(catalogs.quality, catalogs.extension),
       );
-    for (let index = 0; index < data.movies.length; index += 100) {
-      await transaction.batch(
-        data.movies.slice(index, index + 100).map((movie) => ({
-          sql: `INSERT INTO movies (id, ${movieColumns.join(', ')}) VALUES (${Array(
-            movieColumns.length + 1,
-          )
-            .fill('?')
-            .join(', ')})
-          ON CONFLICT(id) DO UPDATE SET ${movieColumns.map((column) => `${column} = excluded.${column}`).join(', ')}`,
-          args: [movie.id, ...movieValues(movie)],
-        })),
-      );
-    }
+    for (const movie of data.movies) await saveMovie(transaction, movie, true);
     await transaction.commit();
   } finally {
     transaction.close();

@@ -7,7 +7,7 @@ export class AuthRepository {
   constructor(private readonly database: DatabaseService) {}
   async findAdministrator(): Promise<Auth | undefined> {
     const result = await this.database.client.execute(
-      'SELECT id, secret_key FROM auth ORDER BY id LIMIT 2',
+      'SELECT id, secret_key FROM auth_credentials ORDER BY id LIMIT 2',
     );
     if (result.rows.length > 1)
       throw new Error(

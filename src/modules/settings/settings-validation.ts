@@ -1,3 +1,7 @@
+import {
+  optionId,
+  catalogValueMaxLength,
+} from '../../shared/titles/catalog-options';
 import { BadRequestException } from '@nestjs/common';
 import { objectBody, strings, text } from '../../common/validation';
 import { ExtensionOption, QualityOption, SettingsDto } from './dto';
@@ -15,13 +19,24 @@ function catalog(
   const options = (value as unknown[]).map((entry) => {
     const item = objectBody(
       entry,
-      titleRequired ? ['value', 'title', 'default'] : ['value', 'default'],
+      titleRequired
+        ? ['id', 'value', 'title', 'default']
+        : ['id', 'value', 'default'],
     );
+    const value = text(item.value, `${field}.value`, catalogValueMaxLength);
+    const type = titleRequired ? 'quality' : 'extension';
+    const legacyId = `${type}:${Buffer.from(value).toString('hex').toUpperCase()}`;
+    if (
+      item.id !== undefined &&
+      item.id !== optionId(type, value) &&
+      item.id !== legacyId
+    )
+      throw new BadRequestException('Catalog ID must match its value');
     if (item.default !== undefined && typeof item.default !== 'boolean') {
       throw new BadRequestException(`${field} defaults must be booleans`);
     }
     return {
-      value: text(item.value, `${field}.value`, 100),
+      value: text(item.value, `${field}.value`, catalogValueMaxLength),
       ...(titleRequired
         ? { title: text(item.title, `${field}.title`, 200) }
         : {}),

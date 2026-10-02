@@ -10,6 +10,9 @@ import {
 @Injectable()
 export class SettingsService {
   constructor(private readonly repository: SettingsRepository) {}
+  getCatalogs() {
+    return this.repository.getCatalogs();
+  }
   async getSettings(): Promise<Settings> {
     try {
       return await this.repository.getSettings();

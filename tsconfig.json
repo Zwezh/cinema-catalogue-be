@@ -17,6 +17,9 @@
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true,
     "strict": true,
-    "moduleResolution": "NodeNext"
+    "moduleResolution": "NodeNext",
+    "types": [
+      "node"
+    ]
   }
 }

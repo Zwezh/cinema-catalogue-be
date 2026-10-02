@@ -98,3 +98,19 @@ The focused Kinopoisk module owns the fixed `https://api.poiskkino.dev/v1.4/movi
 An invalid user JWT returns 401; invalid IDs return 400; missing provider configuration returns 503; provider 404 returns 404; timeout returns 504; provider credentials/quota/network/JSON/schema failures return sanitized 502 responses. Provider 401 responses never sign the frontend user out. Keys, provider error bodies and raw network exceptions are not logged or returned. Tests mock provider requests and use temporary databases.
 
 Deploy this backend endpoint before the frontend update. Keys previously embedded in frontend source/bundles need rotation at the provider; Git history removal is not performed automatically. Replace the server environment value with the rotated key and restart the process. Restrict `.env` access to the deployment owner (`chmod 600 .env`) and keep it out of backups shared with others.
+
+## Catalog v3: series and wishlist
+
+The backend now uses text entity IDs, common title metadata, separate movie/series
+subtypes, explicit seasons, catalog-backed formats, and wishlist membership.
+`npm run migrate` upgrades v1/v2 databases or creates a fresh database. Existing
+movie endpoints retain their scalar movie DTO; new series/wishlist endpoints use
+text provider IDs and format IDs returned by settings.
+
+Read the [API and upgrade guide](docs/catalog-v3.md) before upgrading. It documents
+new routes, request examples, archived legacy tables, and deployment sequencing.
+No frontend changes or live database migration are included in this implementation.
+
+The backend review fixes and solution choices are documented in
+[docs/NESTJS_REVIEW.md](docs/NESTJS_REVIEW.md). Run `npm run migrate` before
+production startup to apply the additive `catalog-v4-provider-index` upgrade.

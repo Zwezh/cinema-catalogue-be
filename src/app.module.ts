@@ -1,3 +1,5 @@
+import { SeriesModule } from './modules/series/series.module';
+import { WishlistModule } from './modules/wishlist/wishlist.module';
 import { KinopoiskModule } from './modules/kinopoisk/kinopoisk.module';
 import { validateEnvironment } from './config/environment';
 import { Module } from '@nestjs/common';
@@ -14,6 +16,8 @@ import { AuthModule, MoviesModule, SettingsModule } from './modules';
     MoviesModule,
     SettingsModule,
     KinopoiskModule,
+    SeriesModule,
+    WishlistModule,
   ],
   controllers: [AppController],
 })

@@ -1,331 +1,221 @@
+import { catalogMigrationIds, upgradeCatalog } from './catalog-upgrade';
+import type { Client, InStatement } from '@libsql/client';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { normalizeSearch } from './search';
 import { storedStringArray } from './json';
-import type { Client, InStatement } from '@libsql/client';
+import { initializeDatabase as initializeLegacy } from './legacy-schema';
+export { defaultQuality, defaultExtensions } from './legacy-schema';
+export type {
+  QualityOptionRecord,
+  ExtensionOptionRecord,
+} from './legacy-schema';
+import type {
+  QualityOptionRecord,
+  ExtensionOptionRecord,
+} from './legacy-schema';
 
-export type ExtensionOptionRecord = {
-  readonly default?: boolean;
-  readonly value: string;
-};
-
-export type QualityOptionRecord = ExtensionOptionRecord & {
-  readonly title: string;
-};
-
-export const defaultQuality: readonly QualityOptionRecord[] = [
-  { title: '2160p 4K', value: '2160p' },
-  { title: '1080p FHD', value: '1080p', default: true },
-  { title: '1080i FHD', value: '1080i' },
-  { title: '720p HD', value: '720p' },
-  { title: 'SD HDTV', value: 'HDTV' },
-  { title: 'SD LOW', value: 'LOW' },
-];
-
-export const defaultExtensions: readonly ExtensionOptionRecord[] = [
-  { value: 'MKV', default: true },
-  { value: 'M4V' },
-  { value: 'TS' },
-  { value: 'AVI' },
-  { value: 'MP4' },
-];
-
-const coreSchemaStatements = [
-  `CREATE TABLE IF NOT EXISTS login_attempts (
-    client_key TEXT PRIMARY KEY,
-    attempts INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
-  )`,
-  'CREATE INDEX IF NOT EXISTS idx_login_attempts_expiration ON login_attempts(expires_at)',
-
-  `CREATE TABLE IF NOT EXISTS auth (
-    id TEXT PRIMARY KEY,
-    secret_key TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS movies (
-    id TEXT PRIMARY KEY,
-    added_date TEXT NOT NULL,
-    age_rating INTEGER,
-    backdrop_url TEXT NOT NULL,
-    compact_poster_url TEXT NOT NULL,
-    countries_json TEXT NOT NULL,
-    description TEXT NOT NULL,
-    director_json TEXT NOT NULL,
-    en_name TEXT NOT NULL,
-    extension TEXT NOT NULL,
-    genres_json TEXT NOT NULL,
-    is_series INTEGER,
-    kp_id INTEGER NOT NULL,
-    poster_url TEXT NOT NULL,
-    name TEXT NOT NULL,
-    movie_length INTEGER NOT NULL,
-    actors_json TEXT NOT NULL,
-    quality TEXT NOT NULL,
-    rating REAL NOT NULL,
-    year_json TEXT NOT NULL,
-    sequels_and_prequels_json TEXT NOT NULL,
-    similar_movies_json TEXT NOT NULL
-  )`,
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_movies_unique_kp_id ON movies(kp_id)',
-  'CREATE INDEX IF NOT EXISTS idx_movies_name ON movies(name)',
-  'CREATE INDEX IF NOT EXISTS idx_movies_rating ON movies(rating)',
-  'CREATE INDEX IF NOT EXISTS idx_movies_added_date ON movies(added_date)',
-];
-
-const settingsCatalogStatements = [
-  `CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    genres_for_filters_json TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS quality_options (
-    settings_id INTEGER NOT NULL DEFAULT 1 REFERENCES settings(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    title TEXT NOT NULL,
-    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
-    sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
-    PRIMARY KEY (settings_id, value),
-    UNIQUE (settings_id, sort_order)
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_options_one_default
-    ON quality_options(settings_id) WHERE is_default = 1`,
-  `CREATE TABLE IF NOT EXISTS extension_options (
-    settings_id INTEGER NOT NULL DEFAULT 1 REFERENCES settings(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
-    sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
-    PRIMARY KEY (settings_id, value),
-    UNIQUE (settings_id, sort_order)
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_extension_options_one_default
-    ON extension_options(settings_id) WHERE is_default = 1`,
-];
-
-export async function initializeDatabase(client: Client): Promise<void> {
-  const ledger = await client.execute(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
-  );
-  if (ledger.rows.length) {
-    const current = await client.execute(
-      'SELECT MAX(version) AS version FROM schema_migrations',
-    );
-    if (Number(current.rows[0].version) > databaseSchemaVersion) {
-      throw new Error(
-        'Database schema is newer than this application; downgrade migration refused',
-      );
-    }
-  }
-  await client.batch(coreSchemaStatements, 'write');
-  await migrateLegacySettings(client);
-  await client.batch(settingsCatalogStatements, 'write');
-  await client.execute(
-    `INSERT OR IGNORE INTO settings (id, genres_for_filters_json)
-     VALUES (1, '[]')`,
-  );
-
-  const transaction = await client.transaction('write');
-  try {
-    const quality = await transaction.execute(
-      'SELECT COUNT(*) AS count FROM quality_options WHERE settings_id = 1',
-    );
-    const extensions = await transaction.execute(
-      'SELECT COUNT(*) AS count FROM extension_options WHERE settings_id = 1',
-    );
-    if (Number(quality.rows[0].count) === 0) {
-      await transaction.batch(qualityStatements(defaultQuality));
-    }
-    if (Number(extensions.rows[0].count) === 0) {
-      await transaction.batch(extensionStatements(defaultExtensions));
-    }
-    await transaction.commit();
-  } finally {
-    transaction.close();
-  }
-  await migrateSearchColumns(client);
-}
+export const databaseSchemaVersion = 4;
+export const settingsId = 'settings:default';
+export { optionId } from '../shared/titles/catalog-options';
+import { optionId } from '../shared/titles/catalog-options';
 
 export function replaceCatalogStatements(
   quality: readonly QualityOptionRecord[],
   extensions: readonly ExtensionOptionRecord[],
 ): InStatement[] {
   return [
-    'DELETE FROM quality_options WHERE settings_id = 1',
-    'DELETE FROM extension_options WHERE settings_id = 1',
-    ...qualityStatements(quality),
-    ...extensionStatements(extensions),
+    'DELETE FROM settings_qualities',
+    'DELETE FROM settings_extensions',
+    'UPDATE qualities SET is_active = 0',
+    'UPDATE extensions SET is_active = 0',
+    ...quality.flatMap((q, i): InStatement[] => [
+      {
+        sql: `INSERT INTO qualities(id,value,title,is_active) VALUES(?,?,?,1)
+        ON CONFLICT(value) DO UPDATE SET title=excluded.title, is_active=1`,
+        args: [optionId('quality', q.value), q.value, q.title],
+      },
+      {
+        sql: `INSERT INTO settings_qualities SELECT ?,id,?,? FROM qualities WHERE value=?`,
+        args: [settingsId, Number(q.default === true), i, q.value],
+      },
+    ]),
+    ...extensions.flatMap((e, i): InStatement[] => [
+      {
+        sql: `INSERT INTO extensions(id,value,is_active) VALUES(?,?,1)
+        ON CONFLICT(value) DO UPDATE SET is_active=1`,
+        args: [optionId('extension', e.value), e.value],
+      },
+      {
+        sql: `INSERT INTO settings_extensions SELECT ?,id,?,? FROM extensions WHERE value=?`,
+        args: [settingsId, Number(e.default === true), i, e.value],
+      },
+    ]),
   ];
 }
 
-function qualityStatements(
-  quality: readonly QualityOptionRecord[],
-): InStatement[] {
-  return quality.map((option, index) => ({
-    sql: `INSERT INTO quality_options
-      (settings_id, value, title, is_default, sort_order) VALUES (1, ?, ?, ?, ?)`,
-    args: [option.value, option.title, Number(option.default === true), index],
-  }));
-}
-
-function extensionStatements(
-  extensions: readonly ExtensionOptionRecord[],
-): InStatement[] {
-  return extensions.map((option, index) => ({
-    sql: `INSERT INTO extension_options
-      (settings_id, value, is_default, sort_order) VALUES (1, ?, ?, ?)`,
-    args: [option.value, Number(option.default === true), index],
-  }));
-}
-
-async function migrateLegacySettings(client: Client): Promise<void> {
-  const columns = await client.execute('PRAGMA table_info(settings)');
-  if (!columns.rows.some((column) => column.name === 'quality_json')) return;
-
-  const transaction = await client.transaction('write');
-  try {
-    // Recheck under the write lock: another instance may already have migrated.
-    const lockedColumns = await transaction.execute(
-      'PRAGMA table_info(settings)',
+export async function initializeDatabase(client: Client): Promise<void> {
+  await client.execute('PRAGMA foreign_keys = ON');
+  const ledger = await client.execute(
+    "SELECT 1 FROM sqlite_master WHERE name='catalog_migrations' AND type='table'",
+  );
+  if (ledger.rows.length) {
+    const ids = await client.execute(
+      'SELECT id FROM catalog_migrations ORDER BY id',
     );
-    if (!lockedColumns.rows.some((column) => column.name === 'quality_json')) {
-      await transaction.commit();
+    if (
+      !ids.rows.length ||
+      ids.rows.some((row, index) => row.id !== catalogMigrationIds[index])
+    )
+      throw new Error('Database schema version is newer or incomplete');
+    const view = await client.execute(
+      "SELECT 1 FROM sqlite_master WHERE type='view' AND name='movie_catalog'",
+    );
+    if (!view.rows.length) await integrateStandalone(client);
+    await upgradeCatalog(client);
+    await assertDatabaseVersion(client);
+    return;
+  }
+  // Existing legacy settings/search upgrades remain supported before the v3 copy.
+  await initializeLegacy(client);
+  const tx = await client.transaction('write');
+  try {
+    const locked = await tx.execute(
+      "SELECT 1 FROM sqlite_master WHERE name='catalog_migrations' AND type='table'",
+    );
+    if (locked.rows.length) {
+      await tx.commit();
+      await upgradeCatalog(client);
+      await assertDatabaseVersion(client);
       return;
     }
-    const legacy = await transaction.execute(
-      'SELECT quality_json, extension_json FROM settings WHERE id = 1',
+    const invalid = await tx.execute(
+      'SELECT id FROM movies WHERE is_series IS NOT NULL AND is_series NOT IN (0,1) LIMIT 1',
     );
-    const row = legacy.rows[0];
-    const quality = row
-      ? parseLegacyCatalog(row.quality_json, true)
-      : defaultQuality;
-    const extensions = row
-      ? parseLegacyCatalog(row.extension_json, false)
-      : defaultExtensions;
-    await transaction.batch([
-      'DROP TABLE IF EXISTS quality_options',
-      'DROP TABLE IF EXISTS extension_options',
-      `CREATE TABLE settings_normalized (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        genres_for_filters_json TEXT NOT NULL
-      )`,
-      `INSERT INTO settings_normalized (id, genres_for_filters_json)
-       SELECT id, genres_for_filters_json FROM settings`,
-      'DROP TABLE settings',
-      'ALTER TABLE settings_normalized RENAME TO settings',
-      ...settingsCatalogStatements,
-      ...qualityStatements(quality as readonly QualityOptionRecord[]),
-      ...extensionStatements(extensions),
-    ]);
-    await transaction.commit();
-  } finally {
-    transaction.close();
-  }
-}
-
-function parseLegacyCatalog(
-  value: unknown,
-  requiresTitle: boolean,
-): ExtensionOptionRecord[] {
-  const parsed: unknown = JSON.parse(String(value));
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    throw new Error(
-      'Legacy catalog must be a non-empty array; migration aborted',
+    if (invalid.rows.length)
+      throw new Error('Invalid legacy is_series; migration aborted');
+    await tx.executeMultiple(
+      readFileSync(resolve(__dirname, '../../database-v3/schema.sql'), 'utf8'),
     );
-  }
-  const values = new Set<string>();
-  let defaults = 0;
-  for (const entry of parsed as unknown[]) {
-    if (
-      typeof entry !== 'object' ||
-      entry === null ||
-      !('value' in entry) ||
-      typeof entry.value !== 'string' ||
-      !entry.value.trim() ||
-      values.has(entry.value.trim().toLowerCase()) ||
-      ('default' in entry && typeof entry.default !== 'boolean') ||
-      (requiresTitle &&
-        (!('title' in entry) ||
-          typeof entry.title !== 'string' ||
-          !entry.title.trim()))
-    ) {
-      throw new Error('Invalid legacy catalog; migration aborted');
+    await tx.executeMultiple(
+      readFileSync(resolve(__dirname, '../../database-v3/migrate.sql'), 'utf8'),
+    );
+    const movies = await tx.execute(
+      'SELECT id,name,actors_json,director_json FROM movies',
+    );
+    for (const m of movies.rows) {
+      await tx.execute({
+        sql: `UPDATE titles SET name_search=?,actors_search_json=?,director_search_json=? WHERE id=?`,
+        args: [
+          normalizeSearch(String(m.name)),
+          JSON.stringify(
+            storedStringArray(m.actors_json, 'actors_json').map(
+              normalizeSearch,
+            ),
+          ),
+          JSON.stringify(
+            storedStringArray(m.director_json, 'director_json').map(
+              normalizeSearch,
+            ),
+          ),
+          String(m.id),
+        ],
+      });
     }
-    values.add(entry.value.trim().toLowerCase());
-    if ('default' in entry && entry.default === true) defaults++;
+    const count = await tx.execute(
+      'SELECT (SELECT COUNT(*) FROM movies) AS source,(SELECT COUNT(*) FROM titles) AS target',
+    );
+    if (count.rows[0].source !== count.rows[0].target)
+      throw new Error('Migration row count mismatch');
+    if ((await tx.execute('PRAGMA foreign_key_check')).rows.length)
+      throw new Error('Migration foreign key check failed');
+    await tx.execute(
+      "INSERT INTO schema_migrations VALUES(3,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+    );
+    // Archive source tables with their exact columns and indexes. They are snapshots.
+    for (const table of [
+      'movies',
+      'settings',
+      'quality_options',
+      'extension_options',
+      'auth',
+    ]) {
+      await tx.execute(`ALTER TABLE ${table} RENAME TO legacy_v2_${table}`);
+    }
+    await tx.executeMultiple(movieViewSql);
+    await tx.commit();
+  } finally {
+    tx.close();
   }
-  if (defaults !== 1)
-    throw new Error('Legacy catalog must have one default; migration aborted');
-  return parsed as ExtensionOptionRecord[];
+  await upgradeCatalog(client);
+  await assertDatabaseVersion(client);
 }
 
-export const databaseSchemaVersion = 2;
-
-async function migrateSearchColumns(client: Client): Promise<void> {
-  const transaction = await client.transaction('write');
+async function integrateStandalone(client: Client): Promise<void> {
+  const tx = await client.transaction('write');
   try {
-    await transaction.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
-      version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
-    )`);
-    const columns = await transaction.execute('PRAGMA table_info(movies)');
-    const additions = [
-      ['name_search', "TEXT NOT NULL DEFAULT ''"],
-      ['actors_search_json', "TEXT NOT NULL DEFAULT '[]'"],
-      ['director_search_json', "TEXT NOT NULL DEFAULT '[]'"],
-    ] as const;
-    const missing = additions.filter(
-      ([name]) => !columns.rows.some((column) => column.name === name),
+    const view = await tx.execute(
+      "SELECT 1 FROM sqlite_master WHERE type='view' AND name='movie_catalog'",
     );
-    for (const [name, definition] of missing)
-      await transaction.execute(
-        `ALTER TABLE movies ADD COLUMN ${name} ${definition}`,
-      );
-    if (missing.length > 0) {
-      const movies = await transaction.execute(
-        'SELECT id, name, actors_json, director_json FROM movies',
-      );
-      for (const movie of movies.rows) {
-        await transaction.execute({
-          sql: 'UPDATE movies SET name_search = ?, actors_search_json = ?, director_search_json = ? WHERE id = ?',
-          args: [
-            normalizeSearch(String(movie.name)),
-            JSON.stringify(
-              storedStringArray(movie.actors_json, 'actors_json').map(
-                normalizeSearch,
-              ),
-            ),
-            JSON.stringify(
-              storedStringArray(movie.director_json, 'director_json').map(
-                normalizeSearch,
-              ),
-            ),
-            String(movie.id),
-          ],
-        });
+    if (!view.rows.length) {
+      for (const table of [
+        'movies',
+        'settings',
+        'quality_options',
+        'extension_options',
+        'auth',
+      ]) {
+        await tx.execute(`ALTER TABLE ${table} RENAME TO legacy_v2_${table}`);
       }
+      await tx.executeMultiple(movieViewSql);
     }
-    await transaction.batch(
-      [1, databaseSchemaVersion].map((version) => ({
-        sql: 'INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)',
-        args: [version, new Date().toISOString()],
-      })),
-    );
-    await transaction.commit();
+    await tx.commit();
   } finally {
-    transaction.close();
+    tx.close();
   }
 }
 
 export async function assertDatabaseVersion(client: Client): Promise<void> {
   const exists = await client.execute(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_migrations'",
   );
   if (!exists.rows.length)
     throw new Error('Database migrations are required; run npm run migrate');
-  const result = await client.execute(
-    'SELECT version FROM schema_migrations ORDER BY version',
+  const ids = await client.execute(
+    'SELECT id FROM catalog_migrations ORDER BY id',
   );
   if (
-    result.rows.length !== databaseSchemaVersion ||
-    result.rows.some((row, index) => Number(row.version) !== index + 1)
-  ) {
+    ids.rows.length !== catalogMigrationIds.length ||
+    ids.rows.some((row, index) => row.id !== catalogMigrationIds[index])
+  )
+    throw new Error('Database schema version is newer or incomplete');
+  const required = await client.execute(
+    "SELECT name FROM sqlite_master WHERE name IN ('idx_titles_provider_canonical','login_attempts','idx_login_attempts_expiration')",
+  );
+  if (required.rows.length !== 3)
     throw new Error(
-      'Database schema version does not match this application; run the matching migrations',
+      'Database schema version is incomplete; run the matching migrations',
     );
-  }
+  const view = await client.execute(
+    "SELECT 1 FROM sqlite_master WHERE type='view' AND name='movie_catalog'",
+  );
+  if (!view.rows.length)
+    throw new Error(
+      'Database schema version is incomplete; standalone v3 package requires backend integration',
+    );
 }
+
+const movieViewSql = `CREATE VIEW movie_catalog AS SELECT
+  t.id,l.added_date,t.age_rating,t.backdrop_url,t.compact_poster_url,t.countries_json,
+  t.description,t.director_json,t.en_name,t.genres_json,
+  COALESCE(v.is_series,CASE WHEN v.title_id IS NULL THEN 0 END) AS is_series,
+  CAST(t.kp_id AS INTEGER) AS kp_id,t.poster_url,t.name,t.movie_length,t.actors_json,
+  t.rating,t.year_json,t.sequels_and_prequels_json,t.similar_movies_json,
+  t.name_search,t.actors_search_json,t.director_search_json,
+  (SELECT q.value FROM title_formats f JOIN qualities q ON q.id=f.quality_id
+    WHERE f.title_id=t.id ORDER BY f.quality_id,f.extension_id LIMIT 1) AS quality,
+  (SELECT e.value FROM title_formats f JOIN extensions e ON e.id=f.extension_id
+    WHERE f.title_id=t.id ORDER BY f.quality_id,f.extension_id LIMIT 1) AS extension
+FROM titles t JOIN library_entries l ON l.title_id=t.id
+LEFT JOIN legacy_movie_values v ON v.title_id=t.id WHERE t.kind='movie';
+`;

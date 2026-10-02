@@ -1,23 +1,11 @@
-export type CreateMovieDto = {
-  readonly addedDate: string;
-  readonly ageRating: number | null;
-  readonly backdropUrl: string;
-  readonly compactPosterUrl: string;
-  readonly countries: string[];
-  readonly description: string;
-  readonly director: string[];
-  readonly enName: string;
+import type { TitleMetadata } from '../../../common/title-metadata';
+
+export type CreateMovieDto = TitleMetadata & {
   readonly extension: string;
-  readonly genres: string[];
   readonly isSeries: boolean | null;
   readonly kpId: number;
-  readonly posterUrl: string;
-  readonly name: string;
   readonly movieLength: number;
-  readonly actors: string[];
   readonly quality: string;
   readonly rating: number;
   readonly year: number | number[];
-  readonly sequelsAndPrequels: string[];
-  readonly similarMovies: string[];
 };

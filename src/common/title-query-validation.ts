@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
-import { PaginationParamsDto } from './dto';
+import { PaginationParamsDto } from './pagination-params';
 
-export const movieSortKeys = [
+export const titleSortKeys = [
   'addedDate',
   'ageRating',
   'enName',
@@ -15,7 +15,7 @@ export const movieSortKeys = [
   'year',
 ] as const;
 
-export function validateMovieQuery(value: unknown): PaginationParamsDto {
+export function validateTitleQuery(value: unknown): PaginationParamsDto {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new BadRequestException('Query must be an object');
   }
@@ -57,7 +57,7 @@ export function validateMovieQuery(value: unknown): PaginationParamsDto {
     return raw;
   };
   const key = text('key') ?? 'name';
-  if (!movieSortKeys.some((candidate) => candidate === key)) {
+  if (!titleSortKeys.some((candidate) => candidate === key)) {
     throw new BadRequestException('Unsupported sort key');
   }
   const direction = text('direction') ?? 'asc';

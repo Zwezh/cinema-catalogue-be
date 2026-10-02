@@ -28,6 +28,7 @@ export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
 
   async onModuleInit(): Promise<void> {
     try {
+      await this.client.execute('PRAGMA foreign_keys = ON');
       if (this.configService.get<boolean>('DATABASE_AUTO_MIGRATE')) {
         await initializeDatabase(this.client);
       } else {

@@ -1,13 +1,13 @@
-import { LibsqlError } from '@libsql/client';
 import {
   BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { TitleConflictError } from '../../shared/titles/title.errors';
 import { randomUUID } from 'node:crypto';
 import { validateCreateMovie, validateUpdateMovie } from './movie-validation';
-import { validateMovieQuery } from './query-validation';
+import { validateTitleQuery } from '../../common/title-query-validation';
 import { CatalogOptionError, MoviesRepository } from './movies.repository';
 import {
   CreateMovieDto,
@@ -21,7 +21,10 @@ import { Movie } from './schemas';
 export class MoviesService {
   constructor(private readonly repository: MoviesRepository) {}
   async create(value: CreateMovieDto): Promise<Movie> {
-    const movie: Movie = { ...validateCreateMovie(value), id: randomUUID() };
+    const dto = validateCreateMovie(value);
+    if (dto.isSeries)
+      throw new BadRequestException('Use the series endpoint for series');
+    const movie: Movie = { ...dto, id: randomUUID() };
     try {
       return await this.repository.insert(movie);
     } catch (error: unknown) {
@@ -29,7 +32,7 @@ export class MoviesService {
     }
   }
   findAll(value: PaginationParamsDto): Promise<MovieListDto> {
-    return this.repository.findAll(validateMovieQuery(value));
+    return this.repository.findAll(validateTitleQuery(value));
   }
   async findOne(id: string): Promise<Movie> {
     const movie = await this.repository.findOne(id);
@@ -38,6 +41,8 @@ export class MoviesService {
   }
   async update(value: MovieDto): Promise<Movie> {
     const dto = validateUpdateMovie(value);
+    if (dto.isSeries)
+      throw new BadRequestException('Use the series endpoint for series');
     try {
       const movie = await this.repository.update(dto);
       if (!movie) throw new NotFoundException(`Movie #${dto.id} not found`);
@@ -55,14 +60,10 @@ export class MoviesService {
     return this.repository.findDistinctGenres();
   }
   private rethrowWriteError(error: unknown): never {
+    if (error instanceof TitleConflictError)
+      throw new ConflictException(error.message);
     if (error instanceof CatalogOptionError)
       throw new BadRequestException(error.message);
-    if (
-      error instanceof LibsqlError &&
-      error.message.includes('UNIQUE constraint failed: movies.kp_id')
-    ) {
-      throw new ConflictException('A movie with the same kpId already exists.');
-    }
     throw error;
   }
 }

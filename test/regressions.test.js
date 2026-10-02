@@ -14,9 +14,7 @@ const {
   SettingsRepository,
 } = require('../src/modules/settings/settings.repository');
 const { SettingsService } = require('../src/modules/settings/settings.service');
-const {
-  validateMovieQuery,
-} = require('../src/modules/movies/query-validation');
+const { validateTitleQuery } = require('../src/common/title-query-validation');
 const { JwtStrategy } = require('../src/modules/auth/jwt-strategy');
 
 const movie = {
@@ -78,7 +76,9 @@ test('legacy migration preserves catalogs, order and genres across restarts', as
     settings.quality.map((x) => x.value),
     ['CUSTOM', 'SECOND'],
   );
-  assert.deepEqual(settings.extension, [{ value: 'CUSTOM', default: true }]);
+  assert.deepEqual(settings.extension, [
+    { id: 'extension:435553544F4D', value: 'CUSTOM', default: true },
+  ]);
   assert.deepEqual(settings.genresForFilters, ['Drama']);
 });
 
@@ -112,7 +112,7 @@ test('SQL migration failure rolls back table replacement', async (t) => {
   );
 });
 
-test('initialization preserves a populated custom catalog when the other is empty', async (t) => {
+test('initialization preserves customized catalogs without resetting retired options', async (t) => {
   const client = await database(t);
   await client.batch(
     replaceCatalogStatements(
@@ -121,33 +121,28 @@ test('initialization preserves a populated custom catalog when the other is empt
     ),
     'write',
   );
-  await client.execute('DELETE FROM extension_options');
+  const before = await new SettingsRepository({ client }).getSettings();
   await initializeDatabase(client);
-  assert.deepEqual(
+  const settings = await new SettingsRepository({ client }).getSettings();
+  assert.deepEqual(settings.quality, [
+    {
+      id: before.quality[0].id,
+      value: 'CUSTOM',
+      title: 'Custom',
+      default: true,
+    },
+  ]);
+  assert.deepEqual(settings.extension, [
+    { id: before.extension[0].id, value: 'CUSTOM', default: true },
+  ]);
+  assert.deepEqual(settings, before);
+  assert.equal(
     (
-      await new SettingsService(
-        new SettingsRepository({ client }),
-      ).getSettings()
-    ).quality,
-    [{ value: 'CUSTOM', title: 'Custom', default: true }],
-  );
-  await client.execute('DELETE FROM quality_options');
-  await client.batch(
-    replaceCatalogStatements(
-      [{ value: 'CUSTOM', title: 'Custom', default: true }],
-      [{ value: 'CUSTOM', default: true }],
-    ),
-    'write',
-  );
-  await client.execute('DELETE FROM quality_options');
-  await initializeDatabase(client);
-  assert.deepEqual(
-    (
-      await new SettingsService(
-        new SettingsRepository({ client }),
-      ).getSettings()
-    ).extension,
-    [{ value: 'CUSTOM', default: true }],
+      await client.execute(
+        "SELECT is_active FROM qualities WHERE value='1080p'",
+      )
+    ).rows[0].is_active,
+    0,
   );
 });
 
@@ -171,17 +166,33 @@ test('concurrent creates and conflicting updates return 409 and preserve data', 
   assert.equal((await service.findOne(other.id)).kpId, 2);
 });
 
-test('existing duplicates prevent unique-index migration without deleting movies', async (t) => {
-  const client = await database(t);
-  const service = new MoviesService(new MoviesRepository({ client }));
-  await client.execute('DROP INDEX idx_movies_unique_kp_id');
-  await service.create(movie);
-  await service.create(movie);
-  await assert.rejects(initializeDatabase(client), /UNIQUE/);
+test('legacy duplicate provider IDs migrate without deleting records', async (t) => {
+  const client = await database(t, false);
+  await require('../src/database/legacy-schema').initializeDatabase(client);
+  const { movieColumns, movieValues } = require('../src/database/movie-record');
+  for (const id of ['a', 'b'])
+    await client.execute({
+      sql: `INSERT INTO movies(id,${movieColumns.join(',')}) VALUES(${Array(
+        movieColumns.length + 1,
+      )
+        .fill('?')
+        .join(',')})`,
+      args: [id, ...movieValues(movie)],
+    });
+  await initializeDatabase(client);
   assert.equal(
-    (await client.execute('SELECT COUNT(*) AS n FROM movies')).rows[0].n,
+    (await client.execute('SELECT COUNT(*) AS n FROM titles')).rows[0].n,
     2,
   );
+  assert.equal(
+    (await client.execute('SELECT COUNT(*) AS n FROM legacy_v2_movies')).rows[0]
+      .n,
+    2,
+  );
+  const service = new MoviesService(new MoviesRepository({ client }));
+  await assert.rejects(service.create(movie), (e) => e.getStatus() === 409);
+  const existing = await service.findOne('a');
+  await service.update({ ...existing, name: 'Still preserved' });
 });
 
 test('malformed public query values produce 400 before SQL', async () => {
@@ -198,11 +209,11 @@ test('malformed public query values produce 400 before SQL', async () => {
     { fromYear: 2025, toYear: 2020 },
   ]) {
     assert.throws(
-      () => validateMovieQuery(query),
+      () => validateTitleQuery(query),
       (e) => e.getStatus() === 400,
     );
   }
-  const valid = validateMovieQuery({
+  const valid = validateTitleQuery({
     pageSize: '10',
     currentPage: '0',
     genres: 'Drama,Comedy',
@@ -372,7 +383,7 @@ test('invalid movie writes and unsupported catalog values do not alter data', as
     (e) => e.getStatus() === 400,
   );
   assert.equal(
-    (await client.execute('SELECT COUNT(*) AS n FROM movies')).rows[0].n,
+    (await client.execute('SELECT COUNT(*) AS n FROM movie_catalog')).rows[0].n,
     0,
   );
   const created = await service.create(movie);
@@ -421,7 +432,7 @@ test('login validates credentials, signs expiring subject claims and rejects wro
   const { AuthService } = require('../src/modules/auth/auth.service');
   const client = await database(t);
   await client.execute({
-    sql: 'INSERT INTO auth VALUES (?,?)',
+    sql: 'INSERT INTO auth_credentials VALUES (?,?)',
     args: ['admin', await bcrypt.hash('test-secret', 4)],
   });
   const jwt = new JwtService({
@@ -463,11 +474,19 @@ test('Unicode name and people search treats wildcard characters literally', asyn
   assert.equal((await service.findAll({ search: '%no' })).totalCount, 0);
 });
 
-test('search migration backfills existing movies and records schema version', async (t) => {
+test('search migration backfills legacy records and validates text ledger', async (t) => {
   const { assertDatabaseVersion } = require('../src/database/schema');
-  const client = await database(t);
-  const service = new MoviesService(new MoviesRepository({ client }));
-  await service.create({ ...movie, name: 'ТЕСТ', actors: ['МЭТТ'] });
+  const client = await database(t, false);
+  await require('../src/database/legacy-schema').initializeDatabase(client);
+  const { movieColumns, movieValues } = require('../src/database/movie-record');
+  await client.execute({
+    sql: `INSERT INTO movies(id,${movieColumns.join(',')}) VALUES(${Array(
+      movieColumns.length + 1,
+    )
+      .fill('?')
+      .join(',')})`,
+    args: ['old', ...movieValues({ ...movie, name: 'ТЕСТ', actors: ['МЭТТ'] })],
+  });
   for (const column of [
     'name_search',
     'actors_search_json',
@@ -478,6 +497,7 @@ test('search migration backfills existing movies and records schema version', as
   await assert.rejects(assertDatabaseVersion(client), /migrations/);
   await initializeDatabase(client);
   await assertDatabaseVersion(client);
+  const service = new MoviesService(new MoviesRepository({ client }));
   assert.equal(
     (await service.findAll({ search: 'тест', actors: 'мэтт' })).totalCount,
     1,
@@ -534,13 +554,14 @@ test('import validates duplicate IDs and rolls back all records on a late confli
     backup(2, id),
     backup(1, '012345678901234567890124'),
   ]);
-  await assert.rejects(importBackups(client, data), /UNIQUE/);
+  await assert.rejects(importBackups(client, data), /same kpId/);
   assert.equal(
-    (await client.execute('SELECT COUNT(*) AS n FROM auth')).rows[0].n,
+    (await client.execute('SELECT COUNT(*) AS n FROM auth_credentials')).rows[0]
+      .n,
     0,
   );
   assert.equal(
-    (await client.execute('SELECT COUNT(*) AS n FROM movies')).rows[0].n,
+    (await client.execute('SELECT COUNT(*) AS n FROM movie_catalog')).rows[0].n,
     1,
   );
   assert.equal(
@@ -597,7 +618,7 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
   await app.listen(0, '127.0.0.1');
   const db = app.get(DatabaseService).client;
   await db.execute({
-    sql: 'INSERT INTO auth VALUES (?,?)',
+    sql: 'INSERT INTO auth_credentials VALUES (?,?)',
     args: ['admin', await bcrypt.hash('test-secret', 4)],
   });
   const http = request(app.getHttpServer());
@@ -680,8 +701,112 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     .auth(token, { type: 'bearer' })
     .send({ ...settings.body, quality: [null] })
     .expect(400);
+  const format = {
+    qualityId: settings.body.quality.find((q) => q.value === '1080p').id,
+    extensionId: settings.body.extension.find((e) => e.value === 'MKV').id,
+  };
+  const seriesInput = {
+    name: 'HTTP series',
+    addedDate: '2026-10-01',
+    kpId: '1000',
+    formats: [format],
+    series: {
+      startYear: 2020,
+      productionStatus: 'in_production',
+      seasons: [{ seasonNumber: 1, isAvailable: true, formats: [format] }],
+    },
+  };
+  await http.post('/api/series').send(seriesInput).expect(401);
+  await http
+    .post('/api/wishlist')
+    .send({ ...seriesInput, kind: 'series' })
+    .expect(401);
+  await http
+    .post('/api/series')
+    .auth(token, { type: 'bearer' })
+    .send({ ...seriesInput, series: { endYear: 2010 } })
+    .expect(400);
+  const createdSeries = await http
+    .post('/api/series')
+    .auth(token, { type: 'bearer' })
+    .send(seriesInput)
+    .expect(201);
+  assert.equal(createdSeries.body.availableSeasonCount, 1);
+  await http.get('/api/series/' + createdSeries.body.id).expect(200);
+  await http.get('/api/movies/' + createdSeries.body.id).expect(404);
+  assert.equal(
+    (await http.get('/api/series?quality=1080p').expect(200)).body.totalCount,
+    1,
+  );
+  await http
+    .put('/api/series/' + createdSeries.body.id)
+    .send(seriesInput)
+    .expect(401);
+  await http
+    .put('/api/series/' + createdSeries.body.id)
+    .auth(token, { type: 'bearer' })
+    .send({ ...seriesInput, name: 'Updated HTTP series' })
+    .expect(200);
+  await http.delete('/api/series/' + createdSeries.body.id).expect(401);
+  const wishInput = {
+    ...seriesInput,
+    kind: 'series',
+    kpId: '1001',
+    releaseDate: '2027-01-01',
+  };
+  const wish = await http
+    .post('/api/wishlist')
+    .auth(token, { type: 'bearer' })
+    .send(wishInput)
+    .expect(201);
+  assert.equal(wish.body.releaseDate, '2027-01-01');
+  await http.get('/api/wishlist/' + wish.body.id).expect(200);
+  assert.equal(
+    (await http.get('/api/wishlist').expect(200)).body.totalCount,
+    1,
+  );
+  await http
+    .put('/api/wishlist/' + wish.body.id)
+    .send(wishInput)
+    .expect(401);
+  await http
+    .put('/api/wishlist/' + wish.body.id)
+    .auth(token, { type: 'bearer' })
+    .send({ ...wishInput, name: 'Updated wish' })
+    .expect(200);
+  await http.delete('/api/wishlist/' + wish.body.id).expect(401);
+  await http
+    .post('/api/wishlist/' + wish.body.id + '/promote')
+    .send({ addedDate: '2027-01-02' })
+    .expect(401);
+  await http
+    .post('/api/wishlist/' + wish.body.id + '/promote')
+    .auth(token, { type: 'bearer' })
+    .send({ addedDate: '2027-02-30' })
+    .expect(400);
+  const promoted = await http
+    .post('/api/wishlist/' + wish.body.id + '/promote')
+    .auth(token, { type: 'bearer' })
+    .send({ addedDate: '2027-01-02' })
+    .expect(201);
+  assert.equal(promoted.body.id, wish.body.id);
+  assert.equal(promoted.body.releaseDate, '2027-01-01');
+  await http.get('/api/wishlist/' + wish.body.id).expect(404);
+  await http
+    .delete('/api/series/' + createdSeries.body.id)
+    .auth(token, { type: 'bearer' })
+    .expect(200);
+  const toDelete = await http
+    .post('/api/wishlist')
+    .auth(token, { type: 'bearer' })
+    .send({ kind: 'movie', name: 'Delete me', addedDate: '2026-10-01' })
+    .expect(201);
+  await http
+    .delete('/api/wishlist/' + toDelete.body.id)
+    .auth(token, { type: 'bearer' })
+    .expect(200);
   await db.execute({
-    sql: 'UPDATE auth SET secret_key = ?',
+    sql: 'UPDATE auth_credentials SET secret_key = ?',
     args: [await bcrypt.hash('new-secret', 4)],
   });
   await http
@@ -703,17 +828,16 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
   assert.ok(Number(limited.headers['retry-after']) > 0);
 });
 
-test('migration refuses a newer database schema without modifying its records', async (t) => {
+test('migration refuses a newer text ledger without changing records', async (t) => {
   const client = await database(t);
-  await client.execute("INSERT INTO schema_migrations VALUES(99, 'future')");
+  await client.execute(
+    "INSERT INTO catalog_migrations VALUES('catalog-v99','future')",
+  );
   await assert.rejects(initializeDatabase(client), /newer/);
   assert.equal(
-    (
-      await client.execute(
-        'SELECT MAX(version) AS version FROM schema_migrations',
-      )
-    ).rows[0].version,
-    99,
+    (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
+      .rows[0].n,
+    3,
   );
 });
 
@@ -727,7 +851,7 @@ test('imports share serialization, preserve custom catalogs and are idempotent',
   await client.batch(
     replaceCatalogStatements(
       [{ value: 'CUSTOM', title: 'Custom', default: true }],
-      [{ value: 'CUSTOM', default: true }],
+      [{ id: 'extension:435553544F4D', value: 'CUSTOM', default: true }],
     ),
     'write',
   );
@@ -758,7 +882,7 @@ test('invalid stored JSON is rejected instead of violating the movie response ty
   const service = new MoviesService(new MoviesRepository({ client }));
   const created = await service.create(movie);
   await client.execute({
-    sql: 'UPDATE movies SET genres_json = ? WHERE id = ?',
+    sql: 'UPDATE titles SET genres_json = ? WHERE id = ?',
     args: ['"Drama"', created.id],
   });
   await assert.rejects(service.findOne(created.id), /Invalid stored JSON/);
@@ -793,7 +917,7 @@ test('frontend quality and age filters combine with a single matching release ye
   );
   assert.equal((await service.findAll({ quality: '720p' })).totalCount, 1);
   assert.equal((await service.findAll({ ageRating: '12' })).totalCount, 1);
-  assert.deepEqual(validateMovieQuery({ genres: ' Drama,Comedy ' }).genres, [
+  assert.deepEqual(validateTitleQuery({ genres: ' Drama,Comedy ' }).genres, [
     'Drama',
     'Comedy',
   ]);
@@ -804,7 +928,7 @@ test('frontend quality and age filters combine with a single matching release ye
     [],
   ]) {
     assert.throws(
-      () => validateMovieQuery(invalid),
+      () => validateTitleQuery(invalid),
       (error) => error.getStatus() === 400,
     );
   }
@@ -815,12 +939,16 @@ test('storage decoding rejects invalid scalar movie fields', async (t) => {
   const service = new MoviesService(new MoviesRepository({ client }));
   const created = await service.create(movie);
   await client.execute({
-    sql: 'UPDATE movies SET is_series = 2 WHERE id = ?',
+    sql: 'UPDATE legacy_movie_values SET is_series = 2 WHERE title_id = ?',
     args: [created.id],
   });
   await assert.rejects(service.findOne(created.id), /Invalid stored movie/);
   await client.execute({
-    sql: 'UPDATE movies SET is_series = NULL, rating = 20 WHERE id = ?',
+    sql: 'UPDATE legacy_movie_values SET is_series=NULL WHERE title_id=?',
+    args: [created.id],
+  });
+  await client.execute({
+    sql: 'UPDATE titles SET rating = 20 WHERE id = ?',
     args: [created.id],
   });
   await assert.rejects(service.findOne(created.id), /Invalid stored movie/);
@@ -830,7 +958,7 @@ test('startup refuses an incomplete migration ledger and closes failed clients',
   const { assertDatabaseVersion } = require('../src/database/schema');
   const { DatabaseService } = require('../src/database/database.service');
   const client = await database(t);
-  await client.execute('DELETE FROM schema_migrations WHERE version = 1');
+  await client.execute("DELETE FROM catalog_migrations WHERE id='catalog-v3'");
   await assert.rejects(assertDatabaseVersion(client), /schema version/);
   const service = new DatabaseService({
     get: (key) => (key === 'TURSO_DATABASE_URL' ? 'file::memory:' : undefined),

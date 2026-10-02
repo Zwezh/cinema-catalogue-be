@@ -1,3 +1,5 @@
+import type { Transaction } from '@libsql/client';
+import { writeTransaction } from '../../database/transaction';
 import { Injectable } from '@nestjs/common';
 import { storedStringArray } from '../../database/json';
 import { DatabaseService } from '../../database/database.service';
@@ -14,17 +16,38 @@ type SettingsRow = {
 export class SettingsRepository {
   constructor(private readonly database: DatabaseService) {}
 
-  async getSettings(): Promise<Settings> {
-    const results = await this.database.client.batch(
+  async getCatalogs() {
+    const [quality, extension] = await this.database.client.batch(
       [
-        'SELECT genres_for_filters_json FROM settings WHERE id = 1',
-        `SELECT value, title, is_default
-         FROM quality_options WHERE settings_id = 1 ORDER BY sort_order`,
-        `SELECT value, is_default
-         FROM extension_options WHERE settings_id = 1 ORDER BY sort_order`,
+        'SELECT id,value,title,is_active FROM qualities ORDER BY value,id',
+        'SELECT id,value,is_active FROM extensions ORDER BY value,id',
       ],
       'read',
     );
+    return {
+      quality: quality.rows.map((q) => ({
+        id: String(q.id),
+        value: String(q.value),
+        title: String(q.title),
+        isActive: Boolean(q.is_active),
+      })),
+      extension: extension.rows.map((e) => ({
+        id: String(e.id),
+        value: String(e.value),
+        isActive: Boolean(e.is_active),
+      })),
+    };
+  }
+
+  async getSettings(transaction?: Transaction): Promise<Settings> {
+    const statements = [
+      "SELECT genres_for_filters_json FROM app_settings WHERE id = 'settings:default'",
+      `SELECT q.id, q.value, q.title, s.is_default FROM settings_qualities s JOIN qualities q ON q.id=s.quality_id WHERE s.settings_id='settings:default' ORDER BY s.sort_order,q.id`,
+      `SELECT e.id, e.value, s.is_default FROM settings_extensions s JOIN extensions e ON e.id=s.extension_id WHERE s.settings_id='settings:default' ORDER BY s.sort_order,e.id`,
+    ];
+    const results = transaction
+      ? await transaction.batch(statements)
+      : await this.database.client.batch(statements, 'read');
     const row = results[0].rows[0] as unknown as SettingsRow | undefined;
     if (!row) {
       throw new SettingsMissingError();
@@ -33,11 +56,13 @@ export class SettingsRepository {
     return {
       _id: legacySettingsId,
       quality: results[1].rows.map((option) => ({
+        id: String(option.id),
         title: String(option.title),
         value: String(option.value),
         ...(Boolean(option.is_default) ? { default: true } : {}),
       })),
       extension: results[2].rows.map((option) => ({
+        id: String(option.id),
         value: String(option.value),
         ...(Boolean(option.is_default) ? { default: true } : {}),
       })),
@@ -49,24 +74,20 @@ export class SettingsRepository {
   }
 
   async update(settingsDto: SettingsDto): Promise<Settings> {
-    const transaction = await this.database.client.transaction('write');
-    try {
+    return writeTransaction(this.database.client, async (transaction) => {
       const existing = await transaction.execute(
-        'SELECT 1 FROM settings WHERE id = 1',
+        "SELECT 1 FROM app_settings WHERE id = 'settings:default'",
       );
       if (!existing.rows.length) throw new SettingsMissingError();
       await transaction.batch([
         {
-          sql: 'UPDATE settings SET genres_for_filters_json = ? WHERE id = 1',
+          sql: "UPDATE app_settings SET genres_for_filters_json = ? WHERE id = 'settings:default'",
           args: [JSON.stringify(settingsDto.genresForFilters)],
         },
         ...replaceCatalogStatements(settingsDto.quality, settingsDto.extension),
       ]);
-      await transaction.commit();
-      return { ...settingsDto, _id: legacySettingsId };
-    } finally {
-      transaction.close();
-    }
+      return this.getSettings(transaction);
+    });
   }
 }
 

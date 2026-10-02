@@ -1,20 +1,13 @@
+import { writeTransaction } from '../../database/transaction';
+import { saveMovie } from '../../database/movies/movie-writer';
 import { substringPattern } from '../../database/search';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
-import {
-  movieColumns,
-  movieValues,
-  movieFromRow,
-  MovieRow,
-} from '../../database/movie-record';
+import { movieFromRow, MovieRow } from '../../database/movie-record';
 import { MovieDto, MovieListDto, PaginationParamsDto } from './dto';
 import { Movie } from './schemas';
 
-export class CatalogOptionError extends Error {
-  constructor() {
-    super('quality and extension must reference configured options');
-  }
-}
+export { CatalogOptionError } from '../../shared/titles/title.errors';
 
 const sortColumns: Record<string, string> = {
   addedDate: 'added_date',
@@ -50,22 +43,25 @@ export class MoviesRepository {
     }
     if (params.fromYear !== undefined || params.toYear !== undefined) {
       conditions.push(
-        'EXISTS (SELECT 1 FROM json_each(movies.year_json) WHERE CAST(value AS INTEGER) BETWEEN ? AND ?)',
+        'EXISTS (SELECT 1 FROM json_each(movie_catalog.year_json) WHERE CAST(value AS INTEGER) BETWEEN ? AND ?)',
       );
       args.push(params.fromYear ?? 1, params.toYear ?? 9999);
     }
-    for (const [column, values] of [
-      ['quality', params.quality],
-      ['age_rating', params.ageRating],
-    ] as const) {
-      if (values?.length) {
-        conditions.push(`${column} IN (${values.map(() => '?').join(', ')})`);
-        args.push(...values);
-      }
+    if (params.quality?.length) {
+      conditions.push(
+        `EXISTS(SELECT 1 FROM title_formats f JOIN qualities q ON q.id=f.quality_id WHERE f.title_id=movie_catalog.id AND q.value IN (${params.quality.map(() => '?').join(',')}))`,
+      );
+      args.push(...params.quality);
+    }
+    if (params.ageRating?.length) {
+      conditions.push(
+        `age_rating IN (${params.ageRating.map(() => '?').join(',')})`,
+      );
+      args.push(...params.ageRating);
     }
     for (const genre of this.asArray(params.genres)) {
       conditions.push(
-        'EXISTS (SELECT 1 FROM json_each(movies.genres_json) WHERE value = ?)',
+        'EXISTS (SELECT 1 FROM title_genres tg JOIN genres g ON g.id=tg.genre_id WHERE tg.title_id=movie_catalog.id AND g.value=?)',
       );
       args.push(genre);
     }
@@ -95,9 +91,9 @@ export class MoviesRepository {
     const secondarySort = params.key === 'name' ? '' : ', name ASC';
     const [countResult, result] = await this.database.client.batch(
       [
-        { sql: `SELECT COUNT(*) AS count FROM movies ${where}`, args },
+        { sql: `SELECT COUNT(*) AS count FROM movie_catalog ${where}`, args },
         {
-          sql: `SELECT * FROM movies ${where}
+          sql: `SELECT * FROM movie_catalog ${where}
           ORDER BY ${sortColumn} ${direction}${secondarySort}, id ASC LIMIT ? OFFSET ?`,
           args: [...args, pageSize, currentPage * pageSize],
         },
@@ -113,73 +109,69 @@ export class MoviesRepository {
 
   async findOne(id: string): Promise<Movie | undefined> {
     const result = await this.database.client.execute({
-      sql: 'SELECT * FROM movies WHERE id = ?',
+      sql: 'SELECT * FROM movie_catalog WHERE id = ?',
       args: [id],
     });
     const row = result.rows[0];
     return row ? movieFromRow(row) : undefined;
   }
 
-  async update(movieDto: MovieDto): Promise<Movie | undefined> {
-    const [quality, extension, result] = await this.database.client.batch(
-      [
-        {
-          sql: 'SELECT 1 FROM quality_options WHERE settings_id = 1 AND value = ?',
-          args: [movieDto.quality],
-        },
-        {
-          sql: 'SELECT 1 FROM extension_options WHERE settings_id = 1 AND value = ?',
-          args: [movieDto.extension],
-        },
-        {
-          sql: `UPDATE movies SET ${movieColumns.map((column) => `${column} = ?`).join(', ')}
-          WHERE id = ? AND EXISTS (SELECT 1 FROM quality_options WHERE settings_id = 1 AND value = ?)
-          AND EXISTS (SELECT 1 FROM extension_options WHERE settings_id = 1 AND value = ?) RETURNING *`,
-          args: [
-            ...movieValues(movieDto),
-            movieDto.id,
-            movieDto.quality,
-            movieDto.extension,
-          ],
-        },
-      ],
-      'write',
-    );
-    if (!quality.rows.length || !extension.rows.length)
-      throw new CatalogOptionError();
-    return result.rows[0] ? movieFromRow(result.rows[0]) : undefined;
+  async update(movie: MovieDto): Promise<Movie | undefined> {
+    return writeTransaction(this.database.client, async (tx) => {
+      const existing = await tx.execute({
+        sql: 'SELECT * FROM movie_catalog WHERE id=?',
+        args: [movie.id],
+      });
+      if (!existing.rows.length) return undefined;
+      await saveMovie(tx, movie);
+      const row = await tx.execute({
+        sql: 'SELECT * FROM movie_catalog WHERE id=?',
+        args: [movie.id],
+      });
+      const result = movieFromRow(row.rows[0]);
+      return result;
+    });
   }
 
   async delete(id: string): Promise<Movie | undefined> {
-    const result = await this.database.client.execute({
-      sql: 'DELETE FROM movies WHERE id = ? RETURNING *',
-      args: [id],
+    return writeTransaction(this.database.client, async (tx) => {
+      const row = await tx.execute({
+        sql: 'SELECT * FROM movie_catalog WHERE id=?',
+        args: [id],
+      });
+      if (!row.rows.length) return undefined;
+      const result = movieFromRow(row.rows[0]);
+      await tx.execute({
+        sql: 'DELETE FROM library_entries WHERE title_id=?',
+        args: [id],
+      });
+      await tx.execute({
+        sql: 'DELETE FROM titles WHERE id=? AND NOT EXISTS(SELECT 1 FROM wishlist_entries WHERE title_id=?)',
+        args: [id, id],
+      });
+      return result;
     });
-    return result.rows[0] ? movieFromRow(result.rows[0]) : undefined;
   }
 
   async findDistinctGenres(): Promise<string[]> {
     const result = await this.database.client.execute(
-      `SELECT DISTINCT TRIM(CAST(value AS TEXT)) AS genre
-       FROM movies, json_each(movies.genres_json)
-       WHERE TRIM(CAST(value AS TEXT)) <> ''
-       ORDER BY genre COLLATE NOCASE ASC`,
+      `SELECT DISTINCT TRIM(g.value) AS genre FROM genres g
+       JOIN title_genres tg ON tg.genre_id=g.id JOIN movie_catalog m ON m.id=tg.title_id
+       WHERE TRIM(g.value)<>'' ORDER BY genre COLLATE NOCASE`,
     );
     return result.rows.map((row) => String(row.genre));
   }
 
   async insert(movie: Movie): Promise<Movie> {
-    const result = await this.database.client.execute({
-      sql: `INSERT INTO movies (id, ${movieColumns.join(', ')})
-        SELECT ${Array(movieColumns.length + 1)
-          .fill('?')
-          .join(', ')}
-        WHERE EXISTS (SELECT 1 FROM quality_options WHERE settings_id = 1 AND value = ?)
-          AND EXISTS (SELECT 1 FROM extension_options WHERE settings_id = 1 AND value = ?) RETURNING *`,
-      args: [movie.id, ...movieValues(movie), movie.quality, movie.extension],
+    return writeTransaction(this.database.client, async (tx) => {
+      await saveMovie(tx, movie);
+      const row = await tx.execute({
+        sql: 'SELECT * FROM movie_catalog WHERE id=?',
+        args: [movie.id],
+      });
+      const result = movieFromRow(row.rows[0]);
+      return result;
     });
-    if (!result.rows.length) throw new CatalogOptionError();
-    return movieFromRow(result.rows[0]);
   }
 
   private asArray(value: string[] | string | undefined): string[] {
@@ -196,7 +188,7 @@ export class MoviesRepository {
     for (const person of value?.split(',').map((item) => item.trim()) ?? []) {
       if (!person) continue;
       conditions.push(
-        `EXISTS (SELECT 1 FROM json_each(movies.${column}) WHERE value LIKE ? ESCAPE '\\')`,
+        `EXISTS (SELECT 1 FROM json_each(movie_catalog.${column}) WHERE value LIKE ? ESCAPE '\\')`,
       );
       args.push(substringPattern(person));
     }
