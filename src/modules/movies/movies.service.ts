@@ -1,10 +1,14 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { TitleConflictError } from '../../shared/titles/title.errors';
+import { randomUUID } from 'node:crypto';
+import { validateCreateMovie, validateUpdateMovie } from './movie-validation';
+import { validateTitleQuery } from '../../common/title-query-validation';
+import { CatalogOptionError, MoviesRepository } from './movies.repository';
 import {
   CreateMovieDto,
   MovieDto,
@@ -15,92 +19,51 @@ import { Movie } from './schemas';
 
 @Injectable()
 export class MoviesService {
-  constructor(
-    @InjectModel(Movie.name) private readonly movieModel: Model<Movie>,
-  ) {}
-
-  async create(movieDto: CreateMovieDto): Promise<Movie> {
-    const isExist = await this.movieModel
-      .findOne({ kpId: movieDto.kpId })
-      .exec();
-    if (isExist) {
-      throw new ConflictException('A movie with the same name already exists.');
+  constructor(private readonly repository: MoviesRepository) {}
+  async create(value: CreateMovieDto): Promise<Movie> {
+    const dto = validateCreateMovie(value);
+    if (dto.isSeries)
+      throw new BadRequestException('Use the series endpoint for series');
+    const movie: Movie = { ...dto, id: randomUUID() };
+    try {
+      return await this.repository.insert(movie);
+    } catch (error: unknown) {
+      this.rethrowWriteError(error);
     }
-    const movie = await this.movieModel.create(movieDto);
-    return movie;
   }
-
-  async findAll(params: PaginationParamsDto): Promise<MovieListDto> {
-    const offset = params.currentPage * params.pageSize;
-    const query = this.movieModel.find();
-    if (params?.search) {
-      query.where('name', new RegExp(params.search, 'i'));
-    }
-    if (params.rating) {
-      query.where({ rating: { $gte: params.rating } });
-    }
-    if (params.fromYear) {
-      query.where({ year: { $gte: params.fromYear } });
-    }
-    if (params.toYear) {
-      query.where({ year: { $lte: params.toYear } });
-    }
-    if (params.genres) {
-      query.where({ genres: { $all: params.genres } });
-    }
-    if (params.actors) {
-      const actorsQuery = params.actors
-        .split(',')
-        .map((actor) => actor.trim())
-        .map((actor) => new RegExp(actor, 'i'));
-      query.where({ actors: { $elemMatch: { $all: actorsQuery } } });
-    }
-    if (params.directors) {
-      const actorsQuery = params.directors
-        .split(',')
-        .map((director) => director.trim())
-        .map((director) => new RegExp(director, 'i'));
-      query.where({ director: { $elemMatch: { $all: actorsQuery } } });
-    }
-    query.sort({ [params.key]: params.direction });
-    if (params.key !== 'name') {
-      query.sort({ name: 'ascending' });
-    }
-    const totalCount = await this.movieModel.countDocuments(query);
-    query.limit(params.pageSize).skip(offset);
-    const list = await query.exec();
-
-    return { list, totalCount, currentPage: params.currentPage };
+  findAll(value: PaginationParamsDto): Promise<MovieListDto> {
+    return this.repository.findAll(validateTitleQuery(value));
   }
-
   async findOne(id: string): Promise<Movie> {
-    return this.movieModel.findById(id).exec();
-  }
-
-  async update(movieDto: MovieDto): Promise<Movie> {
-    const movie = await this.movieModel.findByIdAndUpdate(
-      movieDto.id,
-      movieDto,
-    );
-    if (!movie) {
-      throw new NotFoundException(`Moive #${movieDto.id} not found`);
-    }
+    const movie = await this.repository.findOne(id);
+    if (!movie) throw new NotFoundException(`Movie #${id} not found`);
     return movie;
   }
-
-  async delete(id: string): Promise<Movie> {
-    const deletedMovie = await this.movieModel.findByIdAndDelete(id).exec();
-    return deletedMovie;
+  async update(value: MovieDto): Promise<Movie> {
+    const dto = validateUpdateMovie(value);
+    if (dto.isSeries)
+      throw new BadRequestException('Use the series endpoint for series');
+    try {
+      const movie = await this.repository.update(dto);
+      if (!movie) throw new NotFoundException(`Movie #${dto.id} not found`);
+      return movie;
+    } catch (error: unknown) {
+      this.rethrowWriteError(error);
+    }
   }
-
-  async findAllGenres(): Promise<string[]> {
-    return this.movieModel
-      .find({}, { genres: 1, _id: 0 })
-      .sort({ addedDate: 'descending' })
-      .sort({ name: 'ascending' })
-      .exec()
-      .then((movies: Partial<Movie>[]) =>
-        Array.from(new Set(movies.map((movie) => movie.genres).flat())),
-      );
+  async delete(id: string): Promise<Movie> {
+    const movie = await this.repository.delete(id);
+    if (!movie) throw new NotFoundException(`Movie #${id} not found`);
+    return movie;
+  }
+  findDistinctGenres(): Promise<string[]> {
+    return this.repository.findDistinctGenres();
+  }
+  private rethrowWriteError(error: unknown): never {
+    if (error instanceof TitleConflictError)
+      throw new ConflictException(error.message);
+    if (error instanceof CatalogOptionError)
+      throw new BadRequestException(error.message);
+    throw error;
   }
 }

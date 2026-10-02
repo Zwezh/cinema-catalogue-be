@@ -4,6 +4,8 @@ export type PaginationParamsDto = {
   key: string;
   pageSize: number;
   actors?: string;
+  ageRating?: number[];
+  quality?: string[];
   directors?: string;
   fromYear?: number;
   genres?: string[];

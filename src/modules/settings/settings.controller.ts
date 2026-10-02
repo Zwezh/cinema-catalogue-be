@@ -8,6 +8,11 @@ import { SettingsService } from './settings.service';
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 
+  @Get('catalogs')
+  getCatalogs() {
+    return this.settingsService.getCatalogs();
+  }
+
   @Get()
   async findOne(): Promise<Settings> {
     return this.settingsService.getSettings();

@@ -1,27 +1,32 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
-import { MongooseModule } from '@nestjs/mongoose';
+import { LoginRateLimitGuard } from './login-rate-limit.guard';
 import { AuthController } from './auth.controller';
+import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-guard';
 import { JwtStrategy } from './jwt-strategy';
-import { Auth, AuthSchema } from './schemas';
 
 @Module({
   imports: [
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get('JWT_KEY'),
-        signOptions: { expiresIn: '2592000s' },
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.getOrThrow<string>('JWT_KEY'),
+        signOptions: { expiresIn: 3600 },
       }),
     }),
-    MongooseModule.forFeature([{ name: Auth.name, schema: AuthSchema }]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtAuthGuard, JwtStrategy],
+  providers: [
+    AuthRepository,
+    AuthService,
+    JwtAuthGuard,
+    JwtStrategy,
+    LoginRateLimitGuard,
+  ],
   exports: [AuthService],
 })
 export class AuthModule {}

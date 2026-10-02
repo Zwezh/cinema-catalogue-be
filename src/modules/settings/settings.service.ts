@@ -1,29 +1,36 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { SettingsDto } from './dto';
 import { Settings } from './schemas';
+import { validateSettings } from './settings-validation';
+import {
+  SettingsMissingError,
+  SettingsRepository,
+} from './settings.repository';
 
 @Injectable()
 export class SettingsService {
-  constructor(
-    @InjectModel(Settings.name) private readonly settingsModel: Model<Settings>,
-  ) {}
-
-  async getSettings(): Promise<Settings> {
-    return this.settingsModel
-      .findById({ _id: '65e70d3e350be01cc7546abc' })
-      .exec();
+  constructor(private readonly repository: SettingsRepository) {}
+  getCatalogs() {
+    return this.repository.getCatalogs();
   }
-
-  async update(settingsDto: SettingsDto): Promise<SettingsDto> {
-    const settings = await this.settingsModel.findByIdAndUpdate(
-      { _id: '65e70d3e350be01cc7546abc' },
-      settingsDto,
-    );
-    if (!settings) {
-      throw new NotFoundException(`Settings not found`);
+  async getSettings(): Promise<Settings> {
+    try {
+      return await this.repository.getSettings();
+    } catch (error: unknown) {
+      this.rethrow(error);
     }
-    return settings;
+  }
+  async update(value: SettingsDto): Promise<Settings> {
+    const dto = validateSettings(value);
+    try {
+      return await this.repository.update(dto);
+    } catch (error: unknown) {
+      this.rethrow(error);
+    }
+  }
+  private rethrow(error: unknown): never {
+    if (error instanceof SettingsMissingError)
+      throw new NotFoundException(error.message);
+    throw error;
   }
 }
