@@ -73,6 +73,19 @@ export function validateEnvironment(
       throw new Error(`${key} is outside the supported range`);
     return result;
   };
+  const replicaPath = environment.TURSO_REPLICA_PATH;
+  if (
+    replicaPath !== undefined &&
+    (typeof replicaPath !== 'string' ||
+      (replicaPath !== '' && !replicaPath.trim()) ||
+      replicaPath !== replicaPath.trim() ||
+      replicaPath.includes('\0'))
+  ) {
+    throw new Error('TURSO_REPLICA_PATH must be a nonempty filesystem path');
+  }
+  if (replicaPath && url.startsWith('file:')) {
+    throw new Error('TURSO_REPLICA_PATH requires a remote primary database');
+  }
   const auto = environment.DATABASE_AUTO_MIGRATE ?? String(!production);
   if (auto !== 'true' && auto !== 'false')
     throw new Error('DATABASE_AUTO_MIGRATE must be true or false');
@@ -94,6 +107,13 @@ export function validateEnvironment(
     ...environment,
     JWT_KEY: jwtKey,
     TURSO_DATABASE_URL: url,
+    TURSO_REPLICA_PATH: replicaPath || undefined,
+    TURSO_REPLICA_SYNC_MS: integer(
+      'TURSO_REPLICA_SYNC_MS',
+      30_000,
+      1000,
+      300_000,
+    ),
     PORT: integer('PORT', 3000, 1, 65535),
     TRUST_PROXY_HOPS: integer('TRUST_PROXY_HOPS', 0, 0, 10),
     DATABASE_AUTO_MIGRATE: auto === 'true',

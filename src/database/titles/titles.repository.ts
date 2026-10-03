@@ -2,7 +2,7 @@ import { membershipTable } from './membership-tables';
 import { saveSeasons, validateFormats } from './season-writer';
 import { TitleReader } from './title-reader';
 import { Injectable } from '@nestjs/common';
-import { writeTransaction } from '../transaction';
+import { writeCatalogTransaction } from '../transaction';
 import { randomUUID } from 'node:crypto';
 import type { Transaction } from '@libsql/client';
 import { DatabaseService } from '../database.service';
@@ -55,7 +55,9 @@ export class TitlesRepository {
     membership: Membership,
     seriesOnly = false,
   ): Promise<Title> {
-    const tx = await this.database.client.transaction('read');
+    const tx = await (
+      this.database.readClient ?? this.database.client
+    ).transaction('read');
     try {
       return await this.reader.read(tx, id, membership, seriesOnly);
     } finally {
@@ -139,7 +141,9 @@ export class TitlesRepository {
       enName: 't.en_name',
       movieLength: 't.movie_length',
     };
-    const tx = await this.database.client.transaction('read');
+    const tx = await (
+      this.database.readClient ?? this.database.client
+    ).transaction('read');
     try {
       const count = await tx.execute({
         sql: `SELECT COUNT(*) AS n ${from}`,
@@ -215,7 +219,7 @@ export class TitlesRepository {
     });
   }
   private async write<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
-    return writeTransaction(this.database.client, work);
+    return writeCatalogTransaction(this.database, work);
   }
 
   private async save(

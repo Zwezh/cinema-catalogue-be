@@ -1,5 +1,4 @@
 import { normalizeSearch } from './search';
-import { validateCreateMovie } from '../modules/movies/movie-validation';
 import { storedStringArray, storedYear } from './json';
 import { CreateMovieDto } from '../modules/movies/dto';
 import { Movie } from '../modules/movies/schemas';
@@ -59,30 +58,58 @@ export function movieValues(movie: CreateMovieDto): (string | number | null)[] {
   ];
 }
 
+function storedText(value: unknown, field: string): string {
+  if (typeof value !== 'string')
+    throw new Error(`Invalid stored movie field: ${field}`);
+  return value;
+}
+function storedNumber(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+  integer = true,
+): number {
+  if (typeof value !== 'number' && typeof value !== 'bigint')
+    throw new Error(`Invalid stored movie field: ${field}`);
+  const number = Number(value);
+  if (
+    !Number.isFinite(number) ||
+    number < min ||
+    number > max ||
+    (integer && !Number.isSafeInteger(number))
+  )
+    throw new Error(`Invalid stored movie field: ${field}`);
+  return number;
+}
+
 export function movieFromRow(row: MovieRow): Movie {
   if (row.is_series !== null && row.is_series !== 0 && row.is_series !== 1) {
     throw new Error('Invalid stored movie boolean: is_series');
   }
-  const movie = {
-    id: String(row.id),
-    addedDate: String(row.added_date),
-    ageRating: row.age_rating == null ? null : Number(row.age_rating),
-    backdropUrl: String(row.backdrop_url),
-    compactPosterUrl: String(row.compact_poster_url),
+  return {
+    id: storedText(row.id, 'id'),
+    addedDate: storedText(row.added_date, 'added_date'),
+    ageRating:
+      row.age_rating == null
+        ? null
+        : storedNumber(row.age_rating, 'age_rating', 0, 21),
+    backdropUrl: storedText(row.backdrop_url, 'backdrop_url'),
+    compactPosterUrl: storedText(row.compact_poster_url, 'compact_poster_url'),
     countries: storedStringArray(row.countries_json, 'countries_json'),
-    description: String(row.description),
+    description: storedText(row.description, 'description'),
     director: storedStringArray(row.director_json, 'director_json'),
-    enName: String(row.en_name),
-    extension: String(row.extension),
+    enName: storedText(row.en_name, 'en_name'),
+    extension: storedText(row.extension, 'extension'),
     genres: storedStringArray(row.genres_json, 'genres_json'),
     isSeries: row.is_series == null ? null : Boolean(row.is_series),
-    kpId: Number(row.kp_id),
-    posterUrl: String(row.poster_url),
-    name: String(row.name),
-    movieLength: Number(row.movie_length),
+    kpId: storedNumber(row.kp_id, 'kp_id', 1, Number.MAX_SAFE_INTEGER),
+    posterUrl: storedText(row.poster_url, 'poster_url'),
+    name: storedText(row.name, 'name'),
+    movieLength: storedNumber(row.movie_length, 'movie_length', 0, 100000),
     actors: storedStringArray(row.actors_json, 'actors_json'),
-    quality: String(row.quality),
-    rating: Number(row.rating),
+    quality: storedText(row.quality, 'quality'),
+    rating: storedNumber(row.rating, 'rating', 0, 10, false),
     year: storedYear(row.year_json),
     sequelsAndPrequels: storedStringArray(
       row.sequels_and_prequels_json,
@@ -93,13 +120,4 @@ export function movieFromRow(row: MovieRow): Movie {
       'similar_movies_json',
     ),
   };
-  const { id, ...fields } = movie;
-  try {
-    return {
-      ...validateCreateMovie(fields),
-      id,
-    };
-  } catch {
-    throw new Error('Invalid stored movie fields');
-  }
 }

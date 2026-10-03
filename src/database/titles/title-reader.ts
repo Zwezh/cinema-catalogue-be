@@ -1,6 +1,6 @@
 import { membershipTable } from './membership-tables';
 import type { Transaction, Row } from '@libsql/client';
-import { storedStringArray, storedYear } from '../json';
+import { storedStringArray, storedYear, storedSeriesYear } from '../json';
 import { TitleNotFoundError } from '../../shared/titles/title.errors';
 import type {
   Title,
@@ -125,7 +125,12 @@ export class TitleReader {
           genres: storedStringArray(r.genres_json, 'genres_json'),
           director: storedStringArray(r.director_json, 'director_json'),
           actors: storedStringArray(r.actors_json, 'actors_json'),
-          year: r.year_json === 'null' ? null : storedYear(r.year_json),
+          year:
+            r.kind === 'series'
+              ? storedSeriesYear(r.year_json)
+              : r.year_json === 'null'
+                ? null
+                : storedYear(r.year_json),
           sequelsAndPrequels: storedStringArray(
             r.sequels_and_prequels_json,
             'sequels_and_prequels_json',

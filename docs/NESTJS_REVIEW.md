@@ -53,7 +53,7 @@ can drive that model change separately.
 - `npm run typecheck`: passed.
 - `npm run lint:check`: passed.
 - `npm run build`: passed.
-- `npm run test`: 49 tests passed, including real Nest HTTP/JWT behavior.
+- `npm run test`: 51 tests passed, including real Nest HTTP/JWT behavior.
 - `python3 database-v3/test_schema.py`: six standalone SQL tests passed.
 - Tests use disposable local databases and a temporary localhost HTTP server.
 - No live database, application credentials, external provider API, or deployment
@@ -85,3 +85,19 @@ validator to enforce the movie API contract during promotion; it remains outside
 shared orchestration. Only transport input parsing and policies move; the promotion
 callback still runs inside the repository's atomic transaction. Existing routes,
 DTO response shapes, and schema version remain unchanged by this reorganization.
+
+
+## Live-data migration rehearsal follow-up
+
+The production-data backup revealed preserved descriptive values rejected by
+new-write validation: empty or long string-array entries, a legacy date string,
+and long artwork text. Movie row decoding now validates storage types and numeric
+bounds independently of request validation. It preserves original text/arrays
+without trimming, deleting entries, or applying new request-length/date limits.
+New requests retain their existing stricter rules. A dedicated regression covers
+this distinction; the complete suite passes 51 tests.
+
+The existing series has an unknown bound in its legacy year array. Series response
+year arrays can retain null bounds; the original JSON remains byte-for-byte intact.
+New writes still require valid known year arrays and use the dedicated series
+startYear/endYear fields for partial lifecycle information.

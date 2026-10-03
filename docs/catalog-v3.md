@@ -185,3 +185,92 @@ and HTTP scenarios. `npm run typecheck`, `npm run lint:check`, and `npm run buil
 validate the implementation. `python3 database-v3/test_schema.py` exercises the
 standalone SQL constraints and preservation. Tests use isolated local databases;
 verify a restored copy against the actual Turso deployment before production upgrade.
+
+
+## Pagination performance migrations
+
+Run `npm run migrate` before deploying the current backend. Following v4,
+`catalog-v5-page-indexes` adds ascending/descending `(kind, name, id)` indexes;
+`catalog-v6-sort-indexes` adds matching rating/year indexes with stable name/ID
+tie breakers. These migrations add indexes only; no metadata or memberships are
+rewritten. Previously applied v3/v4 databases upgrade in order and repeated runs
+are idempotent.
+
+Movie lists count against titles/library membership, then materialize only page
+IDs. A page-driven CROSS JOIN retrieves full movie records through primary-key
+lookups. This deliberately fixes the join order: an IN subquery allowed SQLite
+to scan every movie through a sorting index again. The final sort covers only the
+selected page, rather than all descriptions, artwork and JSON arrays.
+
+On 2026-10-02 the live original 30-row view query exceeded a 30-second diagnostic
+limit (users reported approximately five minutes and timeouts). Its plan selected
+`titles_kind`, then a temporary sort. The old archived table returned 30 rows in
+1.95 seconds. After the migrations and page-driven query, eight live repository
+calls completed without timeouts: first name read 12.54 seconds while index
+installation finished; subsequent name/date/rating/year/quality and second-page
+reads 2.65–6.41 seconds. These are end-to-end Turso driver timings from this host,
+not SQLite CPU timings or a production latency guarantee.
+
+Regression tests check page materialization, primary-key hydration, sort index
+usage in both directions, stable order, pagination and unchanged total counts.
+
+Two subsequent real HTTP requests to the rebuilt NestJS app returned 200 with
+30 records and total 2,116: added-date descending in 7.99 seconds, name ascending
+in 11.91 seconds. The timeout regression is removed for the measured unfiltered
+pages, but remote latency remains material; these results do not establish an
+instantaneous response or performance for every filter combination.
+
+
+## Local catalogue read replica
+
+Further profiling showed that SQL plans were only part of the latency problem.
+Using Turso's Hrana response statistics, a trivial `SELECT 1` took 2,036.9 ms
+server-side; an indexed ID page took 688.7 ms, the old flat table 2,116.0 ms,
+and the normalized view page 19,876.4 ms. HTTP transfer added roughly 0.1–0.5
+seconds. The SDK used one HTTP request per page, and decoding was under 100 ms.
+The measured remote server behavior cannot provide a reliable sub-second read
+SLA just by changing the NestJS controller or adding more indexes.
+
+For this Node backend with persistent disk, the existing libSQL SDK supports an
+embedded replica. Configure:
+
+```
+TURSO_REPLICA_PATH=.tmp/read-replica/catalog.sqlite
+TURSO_REPLICA_SYNC_MS=30000
+```
+
+The primary `TURSO_DATABASE_URL` and token stay unchanged. On startup the backend
+synchronizes the replica before selecting it for public movie, series, wishlist
+and settings reads. A separate local connection pool supports concurrent read
+transactions. No response cache or replacement SQL engine is introduced, and no
+remote metadata/schema changes are needed. Indexes remain useful locally.
+
+All writes, login throttling and JWT credential checks use the remote primary.
+Catalogue writes refresh the replica **after commit** before returning; rollback
+never refreshes. A post-write refresh queues behind a background sync rather
+than joining it, so it includes the newly committed write. If synchronization
+fails, catalogue reads fall back to the primary and periodic retries recover.
+
+Changes made through another backend instance or a database tool become visible
+on the next background sync (30 seconds plus sync duration by default). This is
+an explicit consistency tradeoff, not a stale response cache. Authentication
+never uses replicated credentials, so credential revocation remains immediate.
+The first bootstrap is a startup cost; it is not repeated for page requests.
+
+The local file is mode 0600 in a dedicated protected directory, and is kept out
+of Git. Persistent storage is required; leave the path empty/absent on hosts
+without writable persistent disk. Do not point it at the primary database file.
+
+A replica bootstrapped from the actual remote catalogue in 7.68 seconds. Reading
+30 complete movies with name/date/rating/year ordering took 10–18 ms with total
+2,116; ten concurrent reads also succeeded. The same response contract, original
+metadata and normalized write model are retained.
+
+
+HTTP verification with the configured replica returned 200 for every endpoint:
+30-item movie pages with name/date/rating/year ordering, quality and year/rating
+filters and second-page pagination took 28–247 ms; settings 9 ms, series 12 ms,
+wishlist 8 ms and genres 30 ms. Ten concurrent movie/series/wishlist HTTP requests
+completed in 118 ms total. All 59 isolated tests passed, including authoritative
+write/auth routing, post-commit refresh ordering, failed-sync fallback/recovery,
+configuration validation and existing API contracts.

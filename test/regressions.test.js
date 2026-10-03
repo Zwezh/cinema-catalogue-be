@@ -588,6 +588,7 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
   const directory = mkdtempSync(join(tmpdir(), 'cinema-http-'));
   const overrides = {
     NODE_ENV: 'test',
+    TURSO_REPLICA_PATH: '',
     JWT_KEY: 'test-only-key-with-at-least-32-bytes',
     TURSO_DATABASE_URL: `file:${join(directory, 'test.db')}`,
     DATABASE_AUTO_MIGRATE: 'true',
@@ -837,7 +838,7 @@ test('migration refuses a newer text ledger without changing records', async (t)
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    3,
+    5,
   );
 });
 
@@ -1005,4 +1006,107 @@ test('configuration and migration reject malformed sources before accepting them
     (await client.execute('SELECT quality_json FROM settings')).rows.length,
     1,
   );
+});
+
+test('stored legacy metadata remains readable without relaxing new request validation', async (t) => {
+  const client = await database(t);
+  const service = new MoviesService(new MoviesRepository({ client }));
+  const created = await service.create(movie);
+  const longArtwork = 'https://example.com/' + 'x'.repeat(3000);
+  await client.execute({
+    sql: `UPDATE titles SET actors_json=?,director_json=?,sequels_and_prequels_json=?,similar_movies_json=?,compact_poster_url=? WHERE id=?`,
+    args: ['["", "Actor"]', '[""]', '[""]', '[""]', longArtwork, created.id],
+  });
+  await client.execute({
+    sql: 'UPDATE library_entries SET added_date=? WHERE title_id=?',
+    args: ['legacy date', created.id],
+  });
+  const actual = await service.findOne(created.id);
+  assert.deepEqual(actual.actors, ['', 'Actor']);
+  assert.deepEqual(actual.director, ['']);
+  assert.deepEqual(actual.sequelsAndPrequels, ['']);
+  assert.deepEqual(actual.similarMovies, ['']);
+  assert.equal(actual.compactPosterUrl, longArtwork);
+  assert.equal(actual.addedDate, 'legacy date');
+  const { id, ...input } = actual;
+  void id;
+  await assert.rejects(service.create(input), (e) => e.getStatus() === 400);
+});
+
+test('movie pagination selects indexed IDs before loading full metadata', async (t) => {
+  const client = await database(t);
+  const service = new MoviesService(new MoviesRepository({ client }));
+  for (let i = 0; i < 35; i++) {
+    await service.create({
+      ...movie,
+      kpId: i + 1,
+      name: `Movie ${String(i).padStart(2, '0')}`,
+      description: 'x'.repeat(10000),
+    });
+  }
+  const statements = [];
+  const proxy = {
+    batch: async (sql, mode) => {
+      statements.push(...sql);
+      return client.batch(sql, mode);
+    },
+  };
+  const paging = new MoviesService(new MoviesRepository({ client: proxy }));
+  for (const direction of ['asc', 'desc']) {
+    statements.length = 0;
+    const result = await paging.findAll({ pageSize: 30, direction });
+    assert.equal(result.totalCount, 35);
+    assert.equal(result.list.length, 30);
+    assert.equal(
+      result.list[0].name,
+      direction === 'asc' ? 'Movie 00' : 'Movie 34',
+    );
+    const page = statements[1];
+    const plan = await client.execute({
+      sql: `EXPLAIN QUERY PLAN ${page.sql}`,
+      args: page.args,
+    });
+    const details = plan.rows.map((row) => String(row.detail));
+    assert.ok(details.some((detail) => detail.includes('MATERIALIZE page')));
+    assert.ok(
+      details.some((detail) =>
+        detail.includes('SEARCH t USING PRIMARY KEY (id=?)'),
+      ),
+    );
+    assert.ok(details.some((detail) => detail.includes('titles_kind_name')));
+    const pagePlan = await client.execute(
+      `EXPLAIN QUERY PLAN SELECT id FROM movie_catalog ORDER BY name ${direction}, id ASC LIMIT 30`,
+    );
+    assert.ok(
+      !pagePlan.rows.some((row) => String(row.detail).includes('TEMP B-TREE')),
+    );
+  }
+  assert.equal(
+    (await paging.findAll({ currentPage: 1, pageSize: 30 })).list.length,
+    5,
+  );
+});
+
+test('rating and year page selection uses sort indexes in both directions', async (t) => {
+  const client = await database(t);
+  for (const direction of ['ASC', 'DESC']) {
+    for (const field of [
+      'rating',
+      "CASE json_type(year_json) WHEN 'array' THEN CAST(json_extract(year_json, '$[0]') AS INTEGER) ELSE CAST(year_json AS INTEGER) END",
+    ]) {
+      const plan = await client.execute(
+        `EXPLAIN QUERY PLAN SELECT id FROM movie_catalog ORDER BY ${field} ${direction}, name ASC, id ASC LIMIT 30`,
+      );
+      assert.ok(
+        plan.rows.some((row) =>
+          String(row.detail).includes(
+            field === 'rating' ? 'titles_kind_rating' : 'titles_kind_year',
+          ),
+        ),
+      );
+      assert.ok(
+        !plan.rows.some((row) => String(row.detail).includes('TEMP B-TREE')),
+      );
+    }
+  }
 });

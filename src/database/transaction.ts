@@ -1,3 +1,4 @@
+import type { DatabaseService } from './database.service';
 import { LibsqlError, type Client, type Transaction } from '@libsql/client';
 import { setTimeout } from 'node:timers/promises';
 
@@ -25,4 +26,14 @@ export async function writeTransaction<T>(
     }
     await setTimeout(20 * 2 ** attempt);
   }
+}
+
+/** Refresh public reads only after a catalogue transaction has committed. */
+export async function writeCatalogTransaction<T>(
+  database: DatabaseService,
+  work: (tx: Transaction) => Promise<T>,
+): Promise<T> {
+  const result = await writeTransaction(database.client, work);
+  await database.refreshReadReplica?.();
+  return result;
 }
