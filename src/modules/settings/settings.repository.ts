@@ -1,5 +1,5 @@
 import type { Transaction } from '@libsql/client';
-import { writeTransaction } from '../../database/transaction';
+import { writeCatalogTransaction } from '../../database/transaction';
 import { Injectable } from '@nestjs/common';
 import { storedStringArray } from '../../database/json';
 import { DatabaseService } from '../../database/database.service';
@@ -17,7 +17,9 @@ export class SettingsRepository {
   constructor(private readonly database: DatabaseService) {}
 
   async getCatalogs() {
-    const [quality, extension] = await this.database.client.batch(
+    const [quality, extension] = await (
+      this.database.readClient ?? this.database.client
+    ).batch(
       [
         'SELECT id,value,title,is_active FROM qualities ORDER BY value,id',
         'SELECT id,value,is_active FROM extensions ORDER BY value,id',
@@ -47,7 +49,10 @@ export class SettingsRepository {
     ];
     const results = transaction
       ? await transaction.batch(statements)
-      : await this.database.client.batch(statements, 'read');
+      : await (this.database.readClient ?? this.database.client).batch(
+          statements,
+          'read',
+        );
     const row = results[0].rows[0] as unknown as SettingsRow | undefined;
     if (!row) {
       throw new SettingsMissingError();
@@ -74,7 +79,7 @@ export class SettingsRepository {
   }
 
   async update(settingsDto: SettingsDto): Promise<Settings> {
-    return writeTransaction(this.database.client, async (transaction) => {
+    return writeCatalogTransaction(this.database, async (transaction) => {
       const existing = await transaction.execute(
         "SELECT 1 FROM app_settings WHERE id = 'settings:default'",
       );

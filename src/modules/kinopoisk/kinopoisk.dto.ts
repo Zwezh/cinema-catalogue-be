@@ -27,6 +27,16 @@ export type KinopoiskFilmDto = {
   readonly description?: string | null;
   readonly enName?: string | null;
   readonly genres: readonly KinopoiskNamedValue[];
+  readonly isSeries?: boolean | null;
+  readonly type?: string | null;
+  readonly status?: string | null;
+  readonly seriesLength?: number | null;
+  readonly premiere?: { readonly world?: string | null };
+  readonly releaseYears: readonly {
+    readonly start?: number | null;
+    readonly end?: number | null;
+  }[];
+  readonly seasonsInfo: readonly { readonly number?: number | null }[];
   readonly id: number;
   readonly movieLength?: number | null;
   readonly name?: string | null;

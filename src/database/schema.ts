@@ -15,7 +15,7 @@ import type {
   ExtensionOptionRecord,
 } from './legacy-schema';
 
-export const databaseSchemaVersion = 4;
+export const databaseSchemaVersion = 7;
 export const settingsId = 'settings:default';
 export { optionId } from '../shared/titles/catalog-options';
 import { optionId } from '../shared/titles/catalog-options';
@@ -190,9 +190,9 @@ export async function assertDatabaseVersion(client: Client): Promise<void> {
   )
     throw new Error('Database schema version is newer or incomplete');
   const required = await client.execute(
-    "SELECT name FROM sqlite_master WHERE name IN ('idx_titles_provider_canonical','login_attempts','idx_login_attempts_expiration')",
+    "SELECT name FROM sqlite_master WHERE name IN ('idx_titles_provider_canonical','login_attempts','idx_login_attempts_expiration','titles_kind_name','titles_kind_name_desc','titles_kind_rating','titles_kind_rating_desc','titles_kind_year','titles_kind_year_desc','auth_refresh_tokens','auth_refresh_session','auth_refresh_expiry')",
   );
-  if (required.rows.length !== 3)
+  if (required.rows.length !== 12)
     throw new Error(
       'Database schema version is incomplete; run the matching migrations',
     );

@@ -9,7 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 
 export const KINOPOISK_FETCH = Symbol('KINOPOISK_FETCH');
-const providerUrl = 'https://api.poiskkino.dev/v1.4/movie/';
+const providerUrl = 'https://api.poiskkino.dev';
 const maxResponseBytes = 2 * 1024 * 1024;
 
 @Injectable()
@@ -20,12 +20,32 @@ export class KinopoiskClient {
   ) {}
 
   async getMovie(id: number): Promise<unknown> {
+    return this.request(
+      `${providerUrl}/v1.4/movie/${id}`,
+      AbortSignal.timeout(10_000),
+    );
+  }
+
+  getSeasonPage(
+    id: number,
+    next: string | null,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const url = new URL('/v1.5/season', providerUrl);
+    url.searchParams.set('movieId', String(id));
+    url.searchParams.set('limit', '250');
+    for (const field of ['movieId', 'number', 'airDate'])
+      url.searchParams.append('selectFields', field);
+    if (next !== null) url.searchParams.set('next', next);
+    return this.request(url.toString(), signal);
+  }
+
+  private async request(url: string, signal: AbortSignal): Promise<unknown> {
     const token = this.config.get<string>('KINOPOISK_API_TOKEN');
     if (!token)
       throw new ServiceUnavailableException('Movie autofill is not configured');
-    const signal = AbortSignal.timeout(10_000);
     try {
-      const response = await this.fetcher(`${providerUrl}${id}`, {
+      const response = await this.fetcher(url, {
         headers: { 'X-API-KEY': token, Accept: 'application/json' },
         redirect: 'error',
         signal,

@@ -736,7 +736,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   );
   const before = (await client.execute('SELECT * FROM titles')).rows;
   await client.executeMultiple(
-    "DELETE FROM catalog_migrations WHERE id='catalog-v4-provider-index'; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts;",
+    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes','catalog-v7-refresh-sessions'); DROP TABLE auth_refresh_tokens; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
   );
   await assert.rejects(assertDatabaseVersion(client), /schema version/);
   await initializeDatabase(client);
@@ -756,7 +756,35 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    2,
+    5,
   );
   await assertDatabaseVersion(client);
+});
+
+test('legacy series unknown year bounds survive reads without changing stored JSON', async (t) => {
+  const { client, catalog } = await setup(t);
+  const title = await catalog.create(
+    { ...draft, year: [2020] },
+    'library',
+    true,
+  );
+  await client.execute({
+    sql: 'UPDATE titles SET year_json=? WHERE id=?',
+    args: ['[2020,null]', title.id],
+  });
+  const actual = await catalog.findOne(title.id, 'library', true);
+  assert.deepEqual(actual.year, [2020, null]);
+  assert.equal(
+    (
+      await client.execute({
+        sql: 'SELECT year_json FROM titles WHERE id=?',
+        args: [title.id],
+      })
+    ).rows[0].year_json,
+    '[2020,null]',
+  );
+  assert.throws(
+    () => validateTitle({ ...draft, year: [2020, null] }),
+    (e) => e.getStatus() === 400,
+  );
 });

@@ -19,6 +19,13 @@ export function parseKinopoiskFilm(value: unknown): KinopoiskFilmDto {
     description: optionalString(record['description'], 'description'),
     enName: optionalString(record['enName'], 'enName'),
     genres: namedValues(record['genres'], 'genres'),
+    isSeries: optionalBoolean(record['isSeries'], 'isSeries'),
+    type: optionalString(record['type'], 'type'),
+    status: optionalString(record['status'], 'status'),
+    seriesLength: optionalNumber(record['seriesLength'], 'seriesLength'),
+    premiere: premiere(record['premiere']),
+    releaseYears: releaseYears(record['releaseYears']),
+    seasonsInfo: seasonsInfo(record['seasonsInfo']),
     id: requiredId(record['id']),
     movieLength: optionalNumber(record['movieLength'], 'movieLength'),
     name: optionalString(record['name'], 'name'),
@@ -124,6 +131,10 @@ function optionalNumber(
     ageRating: [0, 21, true],
     year: [1, 9999, true],
     movieLength: [0, 100000, true],
+    seriesLength: [0, 100000, true],
+    start: [1, 9999, true],
+    end: [1, 9999, true],
+    number: [0, 10000, true],
     'rating.kp': [0, 10, false],
   };
   const range = limits[field];
@@ -160,4 +171,44 @@ function requiredId(value: unknown): number {
   const id = requiredNumber(value, 'id');
   if (!Number.isSafeInteger(id) || id <= 0) throw invalid('id');
   return id;
+}
+
+function optionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'boolean') throw invalid(field);
+  return value;
+}
+
+function premiere(value: unknown): KinopoiskFilmDto['premiere'] {
+  const record = optionalRecord(value, 'premiere');
+  return record
+    ? { world: optionalString(record['world'], 'premiere.world') }
+    : undefined;
+}
+
+function releaseYears(value: unknown): KinopoiskFilmDto['releaseYears'] {
+  const ranges = optionalArray(value, 'releaseYears');
+  if (ranges.length > 200) throw invalid('releaseYears');
+  return ranges.map((item) => {
+    const record = asRecord(item, 'releaseYears');
+    const start = optionalNumber(record['start'], 'start');
+    // Provider uses zero for an unknown series end; zero is not a calendar year.
+    const end =
+      record['end'] === 0 ? null : optionalNumber(record['end'], 'end');
+    if (start != null && end != null && end < start)
+      throw invalid('releaseYears');
+    return { start, end };
+  });
+}
+
+function seasonsInfo(value: unknown): KinopoiskFilmDto['seasonsInfo'] {
+  const seasons = optionalArray(value, 'seasonsInfo');
+  if (seasons.length > 1000) throw invalid('seasonsInfo');
+  return seasons.map((item) => {
+    const record = asRecord(item, 'seasonsInfo');
+    return { number: optionalNumber(record['number'], 'number') };
+  });
 }

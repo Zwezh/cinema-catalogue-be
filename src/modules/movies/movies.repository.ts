@@ -1,4 +1,4 @@
-import { writeTransaction } from '../../database/transaction';
+import { writeCatalogTransaction } from '../../database/transaction';
 import { saveMovie } from '../../database/movies/movie-writer';
 import { substringPattern } from '../../database/search';
 import { Injectable } from '@nestjs/common';
@@ -89,12 +89,26 @@ export class MoviesRepository {
       ? sortColumns[params.key]
       : 'name';
     const secondarySort = params.key === 'name' ? '' : ', name ASC';
-    const [countResult, result] = await this.database.client.batch(
+    const order = `${sortColumn} ${direction}${secondarySort}, id ASC`;
+    const countWhere = where.replaceAll('movie_catalog.', 't.');
+    const [countResult, result] = await (
+      this.database.readClient ?? this.database.client
+    ).batch(
       [
-        { sql: `SELECT COUNT(*) AS count FROM movie_catalog ${where}`, args },
         {
-          sql: `SELECT * FROM movie_catalog ${where}
-          ORDER BY ${sortColumn} ${direction}${secondarySort}, id ASC LIMIT ? OFFSET ?`,
+          sql: `SELECT COUNT(*) AS count FROM titles t
+          JOIN library_entries l ON l.title_id=t.id
+          WHERE t.kind='movie' ${countWhere ? `AND ${countWhere.slice(6)}` : ''}`,
+          args,
+        },
+        {
+          sql: `WITH page AS MATERIALIZED (
+            SELECT id AS page_id FROM movie_catalog ${where}
+            ORDER BY ${order} LIMIT ? OFFSET ?
+          )
+          SELECT movie_catalog.* FROM page CROSS JOIN movie_catalog
+          WHERE id=page.page_id
+          ORDER BY ${order}`,
           args: [...args, pageSize, currentPage * pageSize],
         },
       ],
@@ -108,7 +122,9 @@ export class MoviesRepository {
   }
 
   async findOne(id: string): Promise<Movie | undefined> {
-    const result = await this.database.client.execute({
+    const result = await (
+      this.database.readClient ?? this.database.client
+    ).execute({
       sql: 'SELECT * FROM movie_catalog WHERE id = ?',
       args: [id],
     });
@@ -117,7 +133,7 @@ export class MoviesRepository {
   }
 
   async update(movie: MovieDto): Promise<Movie | undefined> {
-    return writeTransaction(this.database.client, async (tx) => {
+    return writeCatalogTransaction(this.database, async (tx) => {
       const existing = await tx.execute({
         sql: 'SELECT * FROM movie_catalog WHERE id=?',
         args: [movie.id],
@@ -134,7 +150,7 @@ export class MoviesRepository {
   }
 
   async delete(id: string): Promise<Movie | undefined> {
-    return writeTransaction(this.database.client, async (tx) => {
+    return writeCatalogTransaction(this.database, async (tx) => {
       const row = await tx.execute({
         sql: 'SELECT * FROM movie_catalog WHERE id=?',
         args: [id],
@@ -154,7 +170,9 @@ export class MoviesRepository {
   }
 
   async findDistinctGenres(): Promise<string[]> {
-    const result = await this.database.client.execute(
+    const result = await (
+      this.database.readClient ?? this.database.client
+    ).execute(
       `SELECT DISTINCT TRIM(g.value) AS genre FROM genres g
        JOIN title_genres tg ON tg.genre_id=g.id JOIN movie_catalog m ON m.id=tg.title_id
        WHERE TRIM(g.value)<>'' ORDER BY genre COLLATE NOCASE`,
@@ -163,7 +181,7 @@ export class MoviesRepository {
   }
 
   async insert(movie: Movie): Promise<Movie> {
-    return writeTransaction(this.database.client, async (tx) => {
+    return writeCatalogTransaction(this.database, async (tx) => {
       await saveMovie(tx, movie);
       const row = await tx.execute({
         sql: 'SELECT * FROM movie_catalog WHERE id=?',

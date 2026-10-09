@@ -24,7 +24,8 @@ export type TitleInput = TitleMetadata & {
   formats: Format[];
   series: SeriesDetails | null;
 };
-export type Title = TitleInput & {
+export type Title = Omit<TitleInput, 'year'> & {
+  year: number | (number | null)[] | null;
   id: string;
   availableSeasonCount: number | null;
 };

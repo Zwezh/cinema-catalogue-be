@@ -27,6 +27,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       typeof payload.exp !== 'number' ||
       !Number.isSafeInteger(payload.exp) ||
       payload.exp <= Math.floor(Date.now() / 1000) ||
+      !('sid' in payload) ||
+      typeof payload.sid !== 'string' ||
+      payload.sid.length > 100 ||
       !('sub' in payload) ||
       typeof payload.sub !== 'string' ||
       !('credentialVersion' in payload) ||
@@ -37,7 +40,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const auth = await this.authService.findSecretKey();
     if (
       payload.sub !== auth.id ||
-      payload.credentialVersion !== credentialVersion(auth.secretKey)
+      payload.credentialVersion !== credentialVersion(auth.secretKey) ||
+      !(await this.authService.isSessionActive(payload.sid, auth))
     ) {
       throw new UnauthorizedException();
     }

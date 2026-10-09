@@ -253,11 +253,13 @@ test('JWT strategy validates subject and invalidates tokens after credential rot
     { getOrThrow: () => 'test-only-secret' },
     {
       findSecretKey: async () => auth,
+      isSessionActive: async () => true,
     },
   );
   const payload = {
     exp: Math.floor(Date.now() / 1000) + 3600,
     sub: auth.id,
+    sid: 'test-session',
     credentialVersion: credentialVersion(auth.secretKey),
   };
   assert.deepEqual(await strategy.validate(payload), { userId: auth.id });
@@ -444,6 +446,9 @@ test('login validates credentials, signs expiring subject claims and rejects wro
       client,
     }),
     jwt,
+    new (require('../src/modules/auth/refresh-session.repository').RefreshSessionRepository)(
+      { client },
+    ),
   );
   await assert.rejects(service.signIn(undefined), (e) => e.getStatus() === 400);
   await assert.rejects(service.signIn('wrong'), (e) => e.getStatus() === 401);
@@ -588,6 +593,7 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
   const directory = mkdtempSync(join(tmpdir(), 'cinema-http-'));
   const overrides = {
     NODE_ENV: 'test',
+    TURSO_REPLICA_PATH: '',
     JWT_KEY: 'test-only-key-with-at-least-32-bytes',
     TURSO_DATABASE_URL: `file:${join(directory, 'test.db')}`,
     DATABASE_AUTO_MIGRATE: 'true',
@@ -608,6 +614,7 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     }
     rmSync(directory, { recursive: true, force: true });
   });
+  process.env.CORS_ORIGINS = 'http://localhost:4200';
   const { AppModule } = require('../src/app.module');
   app = await NestFactory.create(AppModule, {
     logger: false,
@@ -622,10 +629,22 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     args: ['admin', await bcrypt.hash('test-secret', 4)],
   });
   const http = request(app.getHttpServer());
-  await http.post('/api/auth').send({}).expect(400);
-  await http.post('/api/auth').send({ secretKey: 'wrong' }).expect(401);
+  await http
+    .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
+    .send({})
+    .expect(400);
+  await http
+    .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
+    .send({ secretKey: 'wrong' })
+    .expect(401);
   const login = await http
     .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
     .send({ secretKey: 'test-secret' })
     .expect(201);
   const token = login.body.access_token;
@@ -643,21 +662,25 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
       token: 'must-not-leak',
     };
   };
-  await http.get('/api/kinopoisk/movies/301/autofill').expect(401);
-  assert.equal(providerCalls, 0);
   await http
-    .get('/api/kinopoisk/movies/NaN/autofill')
-    .auth(token, { type: 'bearer' })
-    .expect(400);
-  assert.equal(providerCalls, 0);
-  const metadata = await http
     .get('/api/kinopoisk/movies/301/autofill')
     .auth(token, { type: 'bearer' })
+    .expect(404);
+  await http.get('/api/kinopoisk/titles/301/autofill').expect(401);
+  assert.equal(providerCalls, 0);
+  await http
+    .get('/api/kinopoisk/titles/NaN/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(400);
+  const titleMetadata = await http
+    .get('/api/kinopoisk/titles/301/autofill')
+    .auth(token, { type: 'bearer' })
     .expect(200);
-  assert.equal(metadata.body.kpId, 301);
-  assert.deepEqual(metadata.body.actors, ['Actor']);
-  assert.equal(metadata.body.token, undefined);
-  assert.equal(metadata.body.id, undefined);
+  assert.equal(titleMetadata.body.kpId, '301');
+  assert.equal(titleMetadata.body.kind, null);
+  assert.equal(titleMetadata.body.series, null);
+  assert.equal(titleMetadata.body.formats, undefined);
+  assert.equal(titleMetadata.body.addedDate, undefined);
   assert.equal(providerCalls, 1);
   await http
     .post('/api/movies')
@@ -815,14 +838,25 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     .send(settings.body)
     .expect(401);
   await http
-    .get('/api/kinopoisk/movies/301/autofill')
+    .get('/api/kinopoisk/titles/301/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(401);
+  await http
+    .get('/api/kinopoisk/titles/301/autofill')
     .auth(token, { type: 'bearer' })
     .expect(401);
   assert.equal(providerCalls, 1);
   for (let i = 0; i < 7; i++)
-    await http.post('/api/auth').send({ secretKey: 'wrong' }).expect(401);
+    await http
+      .post('/api/auth')
+      .set('Origin', 'http://localhost:4200')
+      .set('X-MediaShelf-Request', '1')
+      .send({ secretKey: 'wrong' })
+      .expect(401);
   const limited = await http
     .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
     .send({ secretKey: 'wrong' })
     .expect(429);
   assert.ok(Number(limited.headers['retry-after']) > 0);
@@ -837,7 +871,7 @@ test('migration refuses a newer text ledger without changing records', async (t)
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    3,
+    6,
   );
 });
 
@@ -1005,4 +1039,107 @@ test('configuration and migration reject malformed sources before accepting them
     (await client.execute('SELECT quality_json FROM settings')).rows.length,
     1,
   );
+});
+
+test('stored legacy metadata remains readable without relaxing new request validation', async (t) => {
+  const client = await database(t);
+  const service = new MoviesService(new MoviesRepository({ client }));
+  const created = await service.create(movie);
+  const longArtwork = 'https://example.com/' + 'x'.repeat(3000);
+  await client.execute({
+    sql: `UPDATE titles SET actors_json=?,director_json=?,sequels_and_prequels_json=?,similar_movies_json=?,compact_poster_url=? WHERE id=?`,
+    args: ['["", "Actor"]', '[""]', '[""]', '[""]', longArtwork, created.id],
+  });
+  await client.execute({
+    sql: 'UPDATE library_entries SET added_date=? WHERE title_id=?',
+    args: ['legacy date', created.id],
+  });
+  const actual = await service.findOne(created.id);
+  assert.deepEqual(actual.actors, ['', 'Actor']);
+  assert.deepEqual(actual.director, ['']);
+  assert.deepEqual(actual.sequelsAndPrequels, ['']);
+  assert.deepEqual(actual.similarMovies, ['']);
+  assert.equal(actual.compactPosterUrl, longArtwork);
+  assert.equal(actual.addedDate, 'legacy date');
+  const { id, ...input } = actual;
+  void id;
+  await assert.rejects(service.create(input), (e) => e.getStatus() === 400);
+});
+
+test('movie pagination selects indexed IDs before loading full metadata', async (t) => {
+  const client = await database(t);
+  const service = new MoviesService(new MoviesRepository({ client }));
+  for (let i = 0; i < 35; i++) {
+    await service.create({
+      ...movie,
+      kpId: i + 1,
+      name: `Movie ${String(i).padStart(2, '0')}`,
+      description: 'x'.repeat(10000),
+    });
+  }
+  const statements = [];
+  const proxy = {
+    batch: async (sql, mode) => {
+      statements.push(...sql);
+      return client.batch(sql, mode);
+    },
+  };
+  const paging = new MoviesService(new MoviesRepository({ client: proxy }));
+  for (const direction of ['asc', 'desc']) {
+    statements.length = 0;
+    const result = await paging.findAll({ pageSize: 30, direction });
+    assert.equal(result.totalCount, 35);
+    assert.equal(result.list.length, 30);
+    assert.equal(
+      result.list[0].name,
+      direction === 'asc' ? 'Movie 00' : 'Movie 34',
+    );
+    const page = statements[1];
+    const plan = await client.execute({
+      sql: `EXPLAIN QUERY PLAN ${page.sql}`,
+      args: page.args,
+    });
+    const details = plan.rows.map((row) => String(row.detail));
+    assert.ok(details.some((detail) => detail.includes('MATERIALIZE page')));
+    assert.ok(
+      details.some((detail) =>
+        detail.includes('SEARCH t USING PRIMARY KEY (id=?)'),
+      ),
+    );
+    assert.ok(details.some((detail) => detail.includes('titles_kind_name')));
+    const pagePlan = await client.execute(
+      `EXPLAIN QUERY PLAN SELECT id FROM movie_catalog ORDER BY name ${direction}, id ASC LIMIT 30`,
+    );
+    assert.ok(
+      !pagePlan.rows.some((row) => String(row.detail).includes('TEMP B-TREE')),
+    );
+  }
+  assert.equal(
+    (await paging.findAll({ currentPage: 1, pageSize: 30 })).list.length,
+    5,
+  );
+});
+
+test('rating and year page selection uses sort indexes in both directions', async (t) => {
+  const client = await database(t);
+  for (const direction of ['ASC', 'DESC']) {
+    for (const field of [
+      'rating',
+      "CASE json_type(year_json) WHEN 'array' THEN CAST(json_extract(year_json, '$[0]') AS INTEGER) ELSE CAST(year_json AS INTEGER) END",
+    ]) {
+      const plan = await client.execute(
+        `EXPLAIN QUERY PLAN SELECT id FROM movie_catalog ORDER BY ${field} ${direction}, name ASC, id ASC LIMIT 30`,
+      );
+      assert.ok(
+        plan.rows.some((row) =>
+          String(row.detail).includes(
+            field === 'rating' ? 'titles_kind_rating' : 'titles_kind_year',
+          ),
+        ),
+      );
+      assert.ok(
+        !plan.rows.some((row) => String(row.detail).includes('TEMP B-TREE')),
+      );
+    }
+  }
 });
