@@ -103,8 +103,14 @@ export function validateEnvironment(
         'CORS_ORIGINS must contain HTTP(S) origins without paths',
       );
   }
+  const sameSite = environment.REFRESH_COOKIE_SAMESITE ?? 'lax';
+  if (sameSite !== 'lax' && sameSite !== 'none')
+    throw new Error('REFRESH_COOKIE_SAMESITE must be lax or none');
+  if (sameSite === 'none' && !production)
+    throw new Error('SameSite=None refresh cookies require production HTTPS');
   return {
     ...environment,
+    REFRESH_COOKIE_SAMESITE: sameSite,
     JWT_KEY: jwtKey,
     TURSO_DATABASE_URL: url,
     TURSO_REPLICA_PATH: replicaPath || undefined,

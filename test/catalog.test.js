@@ -736,7 +736,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   );
   const before = (await client.execute('SELECT * FROM titles')).rows;
   await client.executeMultiple(
-    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes'); DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
+    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes','catalog-v7-refresh-sessions'); DROP TABLE auth_refresh_tokens; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
   );
   await assert.rejects(assertDatabaseVersion(client), /schema version/);
   await initializeDatabase(client);
@@ -756,7 +756,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    4,
+    5,
   );
   await assertDatabaseVersion(client);
 });

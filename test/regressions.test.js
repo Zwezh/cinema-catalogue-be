@@ -253,11 +253,13 @@ test('JWT strategy validates subject and invalidates tokens after credential rot
     { getOrThrow: () => 'test-only-secret' },
     {
       findSecretKey: async () => auth,
+      isSessionActive: async () => true,
     },
   );
   const payload = {
     exp: Math.floor(Date.now() / 1000) + 3600,
     sub: auth.id,
+    sid: 'test-session',
     credentialVersion: credentialVersion(auth.secretKey),
   };
   assert.deepEqual(await strategy.validate(payload), { userId: auth.id });
@@ -444,6 +446,9 @@ test('login validates credentials, signs expiring subject claims and rejects wro
       client,
     }),
     jwt,
+    new (require('../src/modules/auth/refresh-session.repository').RefreshSessionRepository)(
+      { client },
+    ),
   );
   await assert.rejects(service.signIn(undefined), (e) => e.getStatus() === 400);
   await assert.rejects(service.signIn('wrong'), (e) => e.getStatus() === 401);
@@ -609,6 +614,7 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     }
     rmSync(directory, { recursive: true, force: true });
   });
+  process.env.CORS_ORIGINS = 'http://localhost:4200';
   const { AppModule } = require('../src/app.module');
   app = await NestFactory.create(AppModule, {
     logger: false,
@@ -623,10 +629,22 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     args: ['admin', await bcrypt.hash('test-secret', 4)],
   });
   const http = request(app.getHttpServer());
-  await http.post('/api/auth').send({}).expect(400);
-  await http.post('/api/auth').send({ secretKey: 'wrong' }).expect(401);
+  await http
+    .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
+    .send({})
+    .expect(400);
+  await http
+    .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
+    .send({ secretKey: 'wrong' })
+    .expect(401);
   const login = await http
     .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
     .send({ secretKey: 'test-secret' })
     .expect(201);
   const token = login.body.access_token;
@@ -644,21 +662,25 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
       token: 'must-not-leak',
     };
   };
-  await http.get('/api/kinopoisk/movies/301/autofill').expect(401);
-  assert.equal(providerCalls, 0);
   await http
-    .get('/api/kinopoisk/movies/NaN/autofill')
-    .auth(token, { type: 'bearer' })
-    .expect(400);
-  assert.equal(providerCalls, 0);
-  const metadata = await http
     .get('/api/kinopoisk/movies/301/autofill')
     .auth(token, { type: 'bearer' })
+    .expect(404);
+  await http.get('/api/kinopoisk/titles/301/autofill').expect(401);
+  assert.equal(providerCalls, 0);
+  await http
+    .get('/api/kinopoisk/titles/NaN/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(400);
+  const titleMetadata = await http
+    .get('/api/kinopoisk/titles/301/autofill')
+    .auth(token, { type: 'bearer' })
     .expect(200);
-  assert.equal(metadata.body.kpId, 301);
-  assert.deepEqual(metadata.body.actors, ['Actor']);
-  assert.equal(metadata.body.token, undefined);
-  assert.equal(metadata.body.id, undefined);
+  assert.equal(titleMetadata.body.kpId, '301');
+  assert.equal(titleMetadata.body.kind, null);
+  assert.equal(titleMetadata.body.series, null);
+  assert.equal(titleMetadata.body.formats, undefined);
+  assert.equal(titleMetadata.body.addedDate, undefined);
   assert.equal(providerCalls, 1);
   await http
     .post('/api/movies')
@@ -816,14 +838,25 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     .send(settings.body)
     .expect(401);
   await http
-    .get('/api/kinopoisk/movies/301/autofill')
+    .get('/api/kinopoisk/titles/301/autofill')
+    .auth(token, { type: 'bearer' })
+    .expect(401);
+  await http
+    .get('/api/kinopoisk/titles/301/autofill')
     .auth(token, { type: 'bearer' })
     .expect(401);
   assert.equal(providerCalls, 1);
   for (let i = 0; i < 7; i++)
-    await http.post('/api/auth').send({ secretKey: 'wrong' }).expect(401);
+    await http
+      .post('/api/auth')
+      .set('Origin', 'http://localhost:4200')
+      .set('X-MediaShelf-Request', '1')
+      .send({ secretKey: 'wrong' })
+      .expect(401);
   const limited = await http
     .post('/api/auth')
+    .set('Origin', 'http://localhost:4200')
+    .set('X-MediaShelf-Request', '1')
     .send({ secretKey: 'wrong' })
     .expect(429);
   assert.ok(Number(limited.headers['retry-after']) > 0);
@@ -838,7 +871,7 @@ test('migration refuses a newer text ledger without changing records', async (t)
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    5,
+    6,
   );
 });
 

@@ -1,3 +1,5 @@
+import { RefreshSessionRepository } from './refresh-session.repository';
+import { AuthRequestGuard } from './auth-request.guard';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
@@ -15,13 +17,15 @@ import { JwtStrategy } from './jwt-strategy';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         secret: configService.getOrThrow<string>('JWT_KEY'),
-        signOptions: { expiresIn: 3600 },
+        signOptions: { expiresIn: 900 },
       }),
     }),
   ],
   controllers: [AuthController],
   providers: [
     AuthRepository,
+    RefreshSessionRepository,
+    AuthRequestGuard,
     AuthService,
     JwtAuthGuard,
     JwtStrategy,
