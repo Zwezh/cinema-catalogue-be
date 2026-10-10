@@ -44,7 +44,7 @@ exporter. Do not delete archived tables as part of this upgrade.
 ## Routes
 
 All routes use the existing `/api` prefix. GETs follow the current public catalog
-policy. Every POST, PUT, DELETE, and promotion requires an administrator bearer JWT
+policy. Every POST, PUT and DELETE requires an administrator bearer JWT
 and honors credential revocation.
 
 | Route | Behavior |
@@ -56,16 +56,15 @@ and honors credential revocation.
 | `DELETE /series/:id` | Remove series from library; keep metadata if still in wishlist |
 | `GET /wishlist` | Paginated wishlist movies and series |
 | `GET /wishlist/:id` | Wishlist title with complete metadata and release date |
-| `POST /wishlist` | Create a wishlist title |
-| `PUT /wishlist/:id` | Replace editable wishlist fields |
+| `POST /wishlist/from-kinopoisk` | Import provider metadata from `{kpId}`; return `{id}` |
+| `POST /wishlist/:id/refresh` | Refresh provider metadata from `{kpId}`; return title |
 | `DELETE /wishlist/:id` | Remove wishlist membership; delete title if no memberships remain |
-| `POST /wishlist/:id/promote` | Move to library atomically, keeping title ID and metadata |
 
 Existing `/movies`, `/settings`, `/auth`, and Kinopoisk autofill routes remain.
 `/movies` accepts and returns the existing numeric kpId/scalar quality/scalar
 extension DTO for frontend compatibility. New `isSeries:true` writes use `/series`
 instead; migrated series are listed there. Movie metadata-only edits preserve
-additional formats from wishlist promotion. Changing the legacy scalar quality or
+additional formats from Wishlist library transfer. Changing the legacy scalar quality or
 extension explicitly replaces its title-format selection.
 
 GET settings adds `id` to each quality and extension option.
@@ -120,17 +119,9 @@ Get `/api/settings` first and use the actual returned quality/extension IDs:
 ```
 
 POST this to `/api/series`. It returns an opaque text `id`, complete defaulted
-metadata, and `availableSeasonCount: 2`. On `/api/wishlist`, add `"kind":"series"`.
-For a future wishlist movie, this minimal input is valid:
-
-```json
-{
-  "kind": "movie",
-  "name": "Future movie",
-  "addedDate": "2026-10-01",
-  "releaseDate": "2027-03-12"
-}
-```
+metadata, and `availableSeasonCount: 2`. Wishlist accepts only provider-backed
+creation via `/api/wishlist/from-kinopoisk` with `{ "kpId": "915196" }`.
+See [Wishlist workflow](wishlist-workflow.md) for refresh and library transfer.
 
 `name` and a valid ISO `addedDate` are required. Wishlist `kind` is required;
 the series endpoint fixes it to series. The remaining common fields are optional:
@@ -160,19 +151,11 @@ reset to defaults. Remove response-only `id` and `availableSeasonCount` before P
 Changing kind in place is rejected. All metadata/projection/format changes roll
 back together on an invalid nested value or catalog reference.
 
-Promote via `/api/wishlist/<id>/promote`:
-
-```json
-{ "addedDate": "2027-03-13" }
-```
-
-Series may be promoted with partial metadata. Movies must first have the complete
-legacy movie contract: numeric-text kpId, year, runtime, rating, and at least one
-format. This prevents an incomplete wishlist draft from breaking the existing
-movie API. ID, release date, seasons, and all formats are preserved; the library
-added date becomes the supplied date. Conflicting membership yields 409. A repeat
-after success yields 404 because it has left wishlist. Promotion also rechecks
-provider conflicts, including historical aliases, under the same write lock.
+Move a Wishlist title through the normal Movie or Series create endpoint with
+complete editor data and optional `wishlistId`. The backend also finds matching
+Wishlist titles automatically by canonical kpId. The transfer is atomic, retains
+the title ID, and rolls back if validation fails. The old generic Wishlist POST,
+PUT and date-only promotion routes are removed.
 
 Release dates are validated `YYYY-MM-DD` calendar dates. The frontend can evaluate
 `releaseDate <= today` using the user's timezone; NULL means unknown. This indicates

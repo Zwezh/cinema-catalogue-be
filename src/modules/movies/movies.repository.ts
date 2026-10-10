@@ -1,3 +1,4 @@
+import { libraryIdentity } from '../../shared/titles/library-identity';
 import { writeCatalogTransaction } from '../../database/transaction';
 import { saveMovie } from '../../database/movies/movie-writer';
 import { substringPattern } from '../../database/search';
@@ -180,9 +181,20 @@ export class MoviesRepository {
     return result.rows.map((row) => String(row.genre));
   }
 
-  async insert(movie: Movie): Promise<Movie> {
+  async insert(movie: Movie & { wishlistId?: string }): Promise<Movie> {
     return writeCatalogTransaction(this.database, async (tx) => {
+      const id = await libraryIdentity(
+        tx,
+        String(movie.kpId),
+        'movie',
+        movie.wishlistId,
+      );
+      movie = { ...movie, id };
       await saveMovie(tx, movie);
+      await tx.execute({
+        sql: 'DELETE FROM wishlist_entries WHERE title_id=?',
+        args: [id],
+      });
       const row = await tx.execute({
         sql: 'SELECT * FROM movie_catalog WHERE id=?',
         args: [movie.id],

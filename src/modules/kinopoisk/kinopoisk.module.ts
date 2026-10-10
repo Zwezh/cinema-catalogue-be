@@ -6,6 +6,7 @@ import { KinopoiskClient, KINOPOISK_FETCH } from './kinopoisk.client';
 
 @Module({
   imports: [AuthModule],
+  exports: [KinopoiskService],
   controllers: [KinopoiskController],
   providers: [
     KinopoiskService,

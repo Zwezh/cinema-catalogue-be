@@ -1,3 +1,6 @@
+import { providerId } from '../../shared/titles/provider-id';
+import { libraryIdentity } from '../../shared/titles/library-identity';
+import { TitleConflictError } from '../../shared/titles/title.errors';
 import { membershipTable } from './membership-tables';
 import { saveSeasons, validateFormats } from './season-writer';
 import { TitleReader } from './title-reader';
@@ -8,10 +11,7 @@ import type { Transaction } from '@libsql/client';
 import { DatabaseService } from '../database.service';
 import { normalizeSearch, substringPattern } from '../search';
 import type { PaginationParamsDto } from '../../common/pagination-params';
-import {
-  TitleInputError,
-  LibraryConflictError,
-} from '../../shared/titles/title.errors';
+import { TitleInputError } from '../../shared/titles/title.errors';
 import { assertProviderId, syncGenres } from './title-writer';
 import type {
   TitleInput,
@@ -29,10 +29,19 @@ export class TitlesRepository {
     input: TitleInput,
     membership: Membership,
     seriesOnly = false,
+    wishlistId?: string,
   ): Promise<Title> {
     return this.write(async (tx) => {
-      const id = randomUUID();
+      const id =
+        membership === 'library'
+          ? await libraryIdentity(tx, input.kpId, input.kind, wishlistId)
+          : randomUUID();
       await this.save(tx, id, input, membership);
+      if (membership === 'library')
+        await tx.execute({
+          sql: 'DELETE FROM wishlist_entries WHERE title_id=?',
+          args: [id],
+        });
       return this.reader.read(tx, id, membership, seriesOnly);
     });
   }
@@ -48,6 +57,47 @@ export class TitlesRepository {
         throw new TitleInputError('Changing title kind is not supported');
       await this.save(tx, id, input, membership);
       return this.reader.read(tx, id, membership, seriesOnly);
+    });
+  }
+  async wishlistSnapshot(
+    id: string,
+  ): Promise<{ title: Title; revision: number }> {
+    const tx = await this.database.client.transaction('read');
+    try {
+      const title = await this.reader.read(tx, id, 'wishlist');
+      const version = await tx.execute({
+        sql: 'SELECT revision FROM title_metadata_revisions WHERE title_id=?',
+        args: [id],
+      });
+      return { title, revision: Number(version.rows[0]?.revision ?? 0) };
+    } finally {
+      tx.close();
+    }
+  }
+  async refreshWishlist(
+    id: string,
+    input: TitleInput,
+    revision: number,
+  ): Promise<Title> {
+    return this.write(async (tx) => {
+      const prior = await this.reader.read(tx, id, 'wishlist');
+      const current = await tx.execute({
+        sql: 'SELECT revision FROM title_metadata_revisions WHERE title_id=?',
+        args: [id],
+      });
+      const owned = await tx.execute({
+        sql: 'SELECT 1 FROM library_entries WHERE title_id=?',
+        args: [id],
+      });
+      if (
+        Number(current.rows[0]?.revision ?? 0) !== revision ||
+        prior.kind !== input.kind ||
+        providerId(prior.kpId) !== input.kpId ||
+        owned.rows.length
+      )
+        throw new TitleConflictError();
+      await this.save(tx, id, input, 'wishlist');
+      return this.reader.read(tx, id, 'wishlist');
     });
   }
   async findOne(
@@ -184,38 +234,6 @@ export class TitlesRepository {
         args: [id, id, id],
       });
       return title;
-    });
-  }
-  async promote(
-    id: string,
-    addedDate: string,
-    validate: (title: Title, options: unknown) => string | null,
-  ): Promise<Title> {
-    return this.write(async (tx) => {
-      const title = await this.reader.read(tx, id, 'wishlist');
-      const format = title.formats[0];
-      const options = format
-        ? await tx.execute({
-            sql: 'SELECT q.value AS quality,e.value AS extension FROM qualities q CROSS JOIN extensions e WHERE q.id=? AND e.id=?',
-            args: [format.qualityId, format.extensionId],
-          })
-        : null;
-      const kpId = validate(title, options?.rows[0]);
-      await assertProviderId(tx, id, kpId, false);
-      const exists = await tx.execute({
-        sql: 'SELECT 1 FROM library_entries WHERE title_id=?',
-        args: [id],
-      });
-      if (exists.rows.length) throw new LibraryConflictError();
-      await tx.execute({
-        sql: 'INSERT INTO library_entries VALUES(?,?)',
-        args: [id, addedDate],
-      });
-      await tx.execute({
-        sql: 'DELETE FROM wishlist_entries WHERE title_id=?',
-        args: [id],
-      });
-      return this.reader.read(tx, id, 'library');
     });
   }
   private async write<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {

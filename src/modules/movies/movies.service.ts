@@ -4,7 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { TitleConflictError } from '../../shared/titles/title.errors';
+import {
+  TitleNotFoundError,
+  TitleConflictError,
+} from '../../shared/titles/title.errors';
 import { randomUUID } from 'node:crypto';
 import { validateCreateMovie, validateUpdateMovie } from './movie-validation';
 import { validateTitleQuery } from '../../common/title-query-validation';
@@ -24,7 +27,7 @@ export class MoviesService {
     const dto = validateCreateMovie(value);
     if (dto.isSeries)
       throw new BadRequestException('Use the series endpoint for series');
-    const movie: Movie = { ...dto, id: randomUUID() };
+    const movie: Movie & { wishlistId?: string } = { ...dto, id: randomUUID() };
     try {
       return await this.repository.insert(movie);
     } catch (error: unknown) {
@@ -60,6 +63,8 @@ export class MoviesService {
     return this.repository.findDistinctGenres();
   }
   private rethrowWriteError(error: unknown): never {
+    if (error instanceof TitleNotFoundError)
+      throw new NotFoundException(error.message);
     if (error instanceof TitleConflictError)
       throw new ConflictException(error.message);
     if (error instanceof CatalogOptionError)

@@ -47,7 +47,13 @@ function parseMovie(body: Record<string, unknown>): CreateMovieDto {
   };
 }
 export function validateCreateMovie(value: unknown): CreateMovieDto {
-  return parseMovie(objectBody(value, fields));
+  const body = objectBody(value, [...fields, 'wishlistId']);
+  return {
+    ...parseMovie(body),
+    ...(body.wishlistId === undefined
+      ? {}
+      : { wishlistId: text(body.wishlistId, 'wishlistId', 100) }),
+  };
 }
 export function validateUpdateMovie(value: unknown): MovieDto {
   const body = objectBody(value, [...fields, 'id']);

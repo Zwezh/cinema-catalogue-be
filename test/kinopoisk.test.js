@@ -653,13 +653,16 @@ test('ongoing provider series normalize the zero end-year sentinel without inven
   }
 });
 
-test('zero end-year normalization remains specific to provider range ends', async () => {
+test('zero year normalization remains specific to provider range boundaries', async () => {
   const {
     parseKinopoiskFilm,
   } = require('../src/modules/kinopoisk/kinopoisk.parser');
   for (const fields of [
     { year: 0 },
-    { releaseYears: [{ start: 0, end: 0 }] },
+    { releaseYears: [{ start: -1, end: 0 }] },
+    { releaseYears: [{ start: '0', end: 0 }] },
+    { releaseYears: [{ start: 2024.5, end: 0 }] },
+    { releaseYears: [{ start: 10000, end: 0 }] },
     { releaseYears: [{ start: 2024, end: -1 }] },
     { releaseYears: [{ start: 2024, end: '0' }] },
     { releaseYears: [{ start: 2024, end: 2020 }] },
@@ -739,4 +742,71 @@ test('series status inference uses open ranges only when explicit production sta
     );
     assert.equal(result.series.endYear, endYear, JSON.stringify(fields));
   }
+});
+
+test('12935736 with both provider range boundaries unknown supports autofill and Wishlist mapping', async () => {
+  const {
+    providerWishlist,
+  } = require('../src/modules/wishlist/provider-wishlist');
+  const requests = [];
+  const service = new KinopoiskService(
+    new KinopoiskClient(config, async (url) => {
+      requests.push(url);
+      return Response.json(
+        url.includes('/movie/')
+          ? {
+              id: 12935736,
+              name: 'Универ. 17 лет спустя',
+              type: 'tv-series',
+              isSeries: true,
+              year: null,
+              status: null,
+              releaseYears: [{ start: 0, end: 0 }],
+              seasonsInfo: null,
+              seriesLength: null,
+              premiere: null,
+            }
+          : emptySeasonPage,
+      );
+    }),
+  );
+  const result = await service.getTitleAutofill(12935736);
+  assert.equal(requests.length, 2);
+  assert.equal(result.kpId, '12935736');
+  assert.equal(result.kind, 'series');
+  assert.equal(result.name, 'Универ. 17 лет спустя');
+  assert.equal(result.year, null);
+  assert.deepEqual(result.series, {
+    startYear: null,
+    endYear: null,
+    productionStatus: 'unknown',
+    announcedSeasonCount: null,
+    seasons: [],
+  });
+  const draft = providerWishlist(result);
+  assert.equal(draft.kpId, '12935736');
+  assert.equal(draft.series.startYear, null);
+  assert.equal(draft.series.endYear, null);
+});
+
+test('unknown provider start sentinel retains a known fallback year and explicit production status', () => {
+  const {
+    parseKinopoiskFilm,
+  } = require('../src/modules/kinopoisk/kinopoisk.parser');
+  const {
+    toTitleAutofill,
+  } = require('../src/modules/kinopoisk/title-autofill.mapper');
+  const result = toTitleAutofill(
+    parseKinopoiskFilm({
+      id: 12935736,
+      isSeries: true,
+      year: 2027,
+      status: 'announced',
+      releaseYears: [{ start: 0, end: 0 }],
+    }),
+  );
+  assert.equal(result.year, 2027);
+  assert.equal(result.series.startYear, 2027);
+  assert.equal(result.series.endYear, null);
+  assert.equal(result.series.productionStatus, 'in_production');
 });

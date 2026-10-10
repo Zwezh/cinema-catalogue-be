@@ -8,6 +8,7 @@ export const catalogMigrationIds = [
   'catalog-v5-page-indexes',
   'catalog-v6-sort-indexes',
   'catalog-v7-refresh-sessions',
+  'catalog-v8-wishlist-refresh',
 ] as const;
 
 export async function upgradeCatalog(client: Client): Promise<void> {
@@ -54,6 +55,13 @@ export async function upgradeCatalog(client: Client): Promise<void> {
         'CREATE INDEX auth_refresh_session ON auth_refresh_tokens(session_id)',
         'CREATE INDEX auth_refresh_expiry ON auth_refresh_tokens(expires_at)',
         "INSERT INTO catalog_migrations VALUES('catalog-v7-refresh-sessions',strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+      ]);
+    }
+    if (versions.rows.length < 6) {
+      await tx.batch([
+        'CREATE TABLE title_metadata_revisions (title_id TEXT PRIMARY KEY REFERENCES titles(id) ON DELETE CASCADE, revision INTEGER NOT NULL)',
+        `CREATE TRIGGER title_metadata_updated AFTER UPDATE ON titles BEGIN INSERT INTO title_metadata_revisions VALUES(NEW.id,1) ON CONFLICT(title_id) DO UPDATE SET revision=revision+1; END`,
+        "INSERT INTO catalog_migrations VALUES('catalog-v8-wishlist-refresh',strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
       ]);
     }
   });
