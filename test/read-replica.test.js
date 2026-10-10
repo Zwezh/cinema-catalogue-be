@@ -18,8 +18,12 @@ function replicaFixture(t, sync) {
   const replica = new CatalogReadReplica(
     { path, syncUrl: 'libsql://fixture.invalid', syncIntervalMs: 30000 },
     (options) => {
-      calls.push(options.syncUrl ? 'synchronizer' : 'reader');
-      return options.syncUrl ? synchronizer : reader;
+      calls.push('reader');
+      return reader;
+    },
+    () => {
+      calls.push('synchronizer');
+      return synchronizer;
     },
   );
   t.after(async () => {

@@ -3,14 +3,12 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   Post,
-  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { BodyValidationPipe } from '../../common/validation';
-import { validatePromotion } from './promotion-validation';
 import { JwtAuthGuard } from '../auth/jwt-guard';
 import { WishlistService } from './wishlist.service';
 
@@ -23,23 +21,18 @@ export class WishlistController {
   @Get(':id') get(@Param('id') id: string) {
     return this.catalog.findOne(id);
   }
-  @UseGuards(JwtAuthGuard) @Post() create(@Body() value: unknown) {
-    return this.catalog.create(value);
+  @UseGuards(JwtAuthGuard) @Post('from-kinopoisk') createFromKinopoisk(
+    @Body() value: unknown,
+  ) {
+    return this.catalog.createFromKinopoisk(value);
   }
-  @UseGuards(JwtAuthGuard) @Put(':id') update(
+  @UseGuards(JwtAuthGuard) @Post(':id/refresh') @HttpCode(200) refresh(
     @Param('id') id: string,
     @Body() value: unknown,
   ) {
-    return this.catalog.update(id, value);
+    return this.catalog.refresh(id, value);
   }
   @UseGuards(JwtAuthGuard) @Delete(':id') delete(@Param('id') id: string) {
     return this.catalog.delete(id);
-  }
-  @UseGuards(JwtAuthGuard) @Post(':id/promote') promote(
-    @Param('id') id: string,
-    @Body(new BodyValidationPipe(validatePromotion))
-    body: { addedDate: string },
-  ) {
-    return this.catalog.promote(id, body.addedDate);
   }
 }

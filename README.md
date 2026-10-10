@@ -109,7 +109,7 @@ text provider IDs and format IDs returned by settings.
 
 Read the [API and upgrade guide](docs/catalog-v3.md) before upgrading. It documents
 new routes, request examples, archived legacy tables, and deployment sequencing.
-No frontend changes or live database migration are included in this implementation.
+Wishlist creation and refresh use server-side provider metadata; see [Wishlist workflow](docs/wishlist-workflow.md). Live migration requires a separate deployment step.
 
 The backend review fixes and solution choices are documented in
 [docs/NESTJS_REVIEW.md](docs/NESTJS_REVIEW.md). Run `npm run migrate` before
@@ -119,7 +119,7 @@ production startup to apply the additive `catalog-v4-provider-index` upgrade.
 
 Authenticated `GET /api/kinopoisk/titles/:id/autofill` returns provider-only `TitleAutofill` metadata for movies or series. It is the sole autofill endpoint for all editors and uses server-only provider credentials, JWT guard, timeout, bounded response reader, and sanitized errors. The redundant movie endpoint has been removed; frontend and backend must be released together.
 
-The title response uses a string `kpId`, nullable numbers and release date, a nullable detected `kind`, and optional subtype metadata in `series`. Provider `isSeries` takes priority over `type`; absent ambiguous type remains null. Series years come from `releaseYears` with `year` as fallback; provider `releaseYears.end: 0` is normalized to null (unknown end), without treating the series as finished. When production status is absent, an open-ended release range with a known start maps to `in_production`; a fully bounded range maps to `finished`; missing ranges stay `unknown`. Explicit provider statuses take precedence. Episode duration uses `seriesLength`, and `premiere.world` becomes a valid date-only release date. Active provider statuses map to `in_production`; completed maps to `finished`; unrecognized statuses remain `unknown`. End years are emitted only for finished series. Season zero is valid and repeated season numbers are deduplicated.
+The title response uses a string `kpId`, nullable numbers and release date, a nullable detected `kind`, and optional subtype metadata in `series`. Provider `isSeries` takes priority over `type`; absent ambiguous type remains null. Series years come from `releaseYears` with `year` as fallback; provider `releaseYears.start: 0` and `releaseYears.end: 0` are normalized to null (unknown boundaries), without treating the series as finished. When production status is absent, an open-ended release range with a known start maps to `in_production`; a fully bounded range maps to `finished`; missing ranges stay `unknown`. Explicit provider statuses take precedence. Episode duration uses `seriesLength`, and `premiere.world` becomes a valid date-only release date. Active provider statuses map to `in_production`; completed maps to `finished`; unrecognized statuses remain `unknown`. End years are emitted only for finished series. Season zero is valid and repeated season numbers are deduplicated.
 
 Provider season lists do not establish local file availability or an authoritative announced total. Series enrichment requests `GET https://api.poiskkino.dev/v1.5/season?movieId=ID` with selected `movieId`, `number`, and `airDate` fields. Cursor pagination follows at most four pages of 250 records under one ten-second timeout; cursors are encoded query values on the fixed provider host. Invalid data, repeated cursors or excess pages fail without partial metadata. Known air dates supply the existing season release year; exact season dates are not persisted. Undated `seasonsInfo` numbers are retained. See the [provider schema](https://api.poiskkino.dev/documentation-json). Returned season entries contain only `seasonNumber` and nullable `releaseYear`; no formats, availability flags, membership date, server entity ID, or derived available count is returned. Media-shelf validates this separate DTO and merges it into the latest user draft before sending a normal collection write DTO. New imported seasons default to unavailable with no formats, and existing local season data is preserved. No collection is written by autofill.
 
@@ -127,3 +127,41 @@ Provider schema reference: https://api.poiskkino.dev/documentation-json
 
 
 Autofill troubleshooting: the movie response can omit `seasonsInfo` even for a known series. The separate season request is therefore required. A live check for ID `915196` on 2026-10-06 returned seasons 1–5 with release years 2016, 2017, 2019, 2022, and 2025 through the current service. If an API instance returns an empty list for that ID, compare its deployed version and provider configuration with the current build; rebuilding source does not restart an already running server. A deterministic regression covers the missing-`seasonsInfo` case without live provider calls.
+
+## Combined Gallery
+
+Public `GET /api/gallery` returns `{list,totalCount,currentPage}` with compact Movie,
+Series and Wishlist card summaries. Existing collection list and detail responses
+remain unchanged. No database migration is required.
+
+`collections` accepts `movies,series,wishlist` and `kinds` accepts `movie,series`,
+with repeated or comma-separated values; omission selects all. Existing name
+search, genre, quality, age, rating, people and release-year filters apply across
+the selected scope. Paging is zero-based (1–100 items), with addedDate descending
+by default. Sorting supports addedDate, ageRating, enName, kpId, movieLength,
+name, rating and year; unknown values sort last, with internal IDs breaking ties.
+Unknown query keys/scopes are rejected with 400.
+
+A title in both memberships appears once, with Library taking precedence only if
+its Movie/Series collection is selected; Wishlist-only reads still return it.
+Historical titles with the same provider ID remain separate records. Summary
+reads use one read transaction, an ID-first page and bounded page-only aggregates;
+descriptions, complete seasons and editor format IDs are not returned. Existing
+collection write endpoints own edit, refresh and delete operations.
+
+See the query and summary types in `src/modules/gallery/gallery.types.ts`.
+
+## Replica synchronization and request latency
+
+When `TURSO_REPLICA_PATH` is configured, local catalog reads use a separate pooled
+reader. Embedded libSQL synchronization opens and runs in an isolated Node child
+process: its native sync is synchronous and must never run on the HTTP event loop.
+Each synchronization is limited to ten seconds; failure terminates the worker
+and routes reads to the primary until a subsequent sync succeeds. Credentials
+are passed over IPC, not command-line arguments or logs.
+
+Background sync runs at `TURSO_REPLICA_SYNC_MS`. A post-commit sync stays queued
+after any running background sync, so a completed library save cannot acknowledge
+an older replica snapshot. Sync failures do not undo an already committed write.
+Restart the backend after building these changes; an already blocked process
+cannot load the fix from the rebuilt files.

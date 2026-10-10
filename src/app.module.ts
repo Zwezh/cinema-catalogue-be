@@ -1,3 +1,4 @@
+import { GalleryModule } from './modules/gallery/gallery.module';
 import { SeriesModule } from './modules/series/series.module';
 import { WishlistModule } from './modules/wishlist/wishlist.module';
 import { KinopoiskModule } from './modules/kinopoisk/kinopoisk.module';
@@ -18,6 +19,7 @@ import { AuthModule, MoviesModule, SettingsModule } from './modules';
     KinopoiskModule,
     SeriesModule,
     WishlistModule,
+    GalleryModule,
   ],
   controllers: [AppController],
 })

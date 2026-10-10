@@ -15,8 +15,3 @@ export class TitleNotFoundError extends Error {
   }
 }
 export class TitleInputError extends Error {}
-export class LibraryConflictError extends Error {
-  constructor() {
-    super('Title is already in the library');
-  }
-}

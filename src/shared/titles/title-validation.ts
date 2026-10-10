@@ -126,6 +126,7 @@ export function validateTitle(value: unknown, seriesOnly = false): TitleInput {
     'formats',
     'releaseDate',
     'series',
+    'wishlistId',
   ]);
   const kind = seriesOnly ? 'series' : body.kind;
   if (

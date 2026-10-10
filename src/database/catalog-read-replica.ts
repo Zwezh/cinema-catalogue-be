@@ -1,7 +1,11 @@
 import { createClient, type Client } from '@libsql/client';
 import { Logger } from '@nestjs/common';
-import { chmodSync, mkdirSync, statSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import {
+  ReplicaSyncWorker,
+  type ReplicaSynchronizer,
+} from './replica-sync-worker';
 
 interface ReplicaOptions {
   path: string;
@@ -13,7 +17,7 @@ interface ReplicaOptions {
 /** Local catalogue reads; credentials and writes always use the primary client. */
 export class CatalogReadReplica {
   private readonly logger = new Logger(CatalogReadReplica.name);
-  private readonly replica: Client;
+  private readonly replica: ReplicaSynchronizer;
   private readonly url: string;
   private reader?: Client;
   private ready = false;
@@ -24,6 +28,9 @@ export class CatalogReadReplica {
   constructor(
     private readonly options: ReplicaOptions,
     private readonly factory: typeof createClient = createClient,
+    synchronizer: (
+      config: Parameters<typeof createClient>[0],
+    ) => ReplicaSynchronizer = (config) => new ReplicaSyncWorker(config),
   ) {
     const path = resolve(options.path);
     const directory = dirname(path);
@@ -34,14 +41,15 @@ export class CatalogReadReplica {
       );
     }
     this.url = `file:${path}`;
-    this.replica = factory({
+    // Create the private file before the isolated worker opens it.
+    closeSync(openSync(path, 'a', 0o600));
+    chmodSync(path, 0o600);
+    this.replica = synchronizer({
       url: this.url,
       syncUrl: options.syncUrl,
       authToken: options.authToken,
       readYourWrites: true,
     });
-    // The replica contains credential hashes as well as catalogue metadata.
-    chmodSync(path, 0o600);
   }
 
   get client(): Client | undefined {
@@ -85,9 +93,9 @@ export class CatalogReadReplica {
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.timer);
+    await this.replica.close();
     await this.pending;
     this.reader?.close();
-    this.replica.close();
     this.ready = false;
   }
 }

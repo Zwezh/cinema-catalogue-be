@@ -741,8 +741,8 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
   };
   await http.post('/api/series').send(seriesInput).expect(401);
   await http
-    .post('/api/wishlist')
-    .send({ ...seriesInput, kind: 'series' })
+    .post('/api/wishlist/from-kinopoisk')
+    .send({ kpId: '1000' })
     .expect(401);
   await http
     .post('/api/series')
@@ -777,11 +777,9 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     kpId: '1001',
     releaseDate: '2027-01-01',
   };
-  const wish = await http
-    .post('/api/wishlist')
-    .auth(token, { type: 'bearer' })
-    .send(wishInput)
-    .expect(201);
+  const { TitlesService } = require('../src/shared/titles/titles.service');
+  const titles = app.get(TitlesService);
+  const wish = { body: await titles.create(wishInput, 'wishlist') };
   assert.equal(wish.body.releaseDate, '2027-01-01');
   await http.get('/api/wishlist/' + wish.body.id).expect(200);
   assert.equal(
@@ -789,28 +787,30 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     1,
   );
   await http
-    .put('/api/wishlist/' + wish.body.id)
-    .send(wishInput)
+    .post('/api/wishlist/' + wish.body.id + '/refresh')
+    .send({ kpId: '1001' })
     .expect(401);
-  await http
-    .put('/api/wishlist/' + wish.body.id)
-    .auth(token, { type: 'bearer' })
-    .send({ ...wishInput, name: 'Updated wish' })
-    .expect(200);
   await http.delete('/api/wishlist/' + wish.body.id).expect(401);
   await http
-    .post('/api/wishlist/' + wish.body.id + '/promote')
-    .send({ addedDate: '2027-01-02' })
-    .expect(401);
-  await http
-    .post('/api/wishlist/' + wish.body.id + '/promote')
+    .post('/api/series')
     .auth(token, { type: 'bearer' })
-    .send({ addedDate: '2027-02-30' })
+    .send({
+      ...seriesInput,
+      kpId: '1001',
+      wishlistId: wish.body.id,
+      addedDate: '2027-02-30',
+    })
     .expect(400);
   const promoted = await http
-    .post('/api/wishlist/' + wish.body.id + '/promote')
+    .post('/api/series')
     .auth(token, { type: 'bearer' })
-    .send({ addedDate: '2027-01-02' })
+    .send({
+      ...seriesInput,
+      kpId: '1001',
+      wishlistId: wish.body.id,
+      releaseDate: '2027-01-01',
+      addedDate: '2027-01-02',
+    })
     .expect(201);
   assert.equal(promoted.body.id, wish.body.id);
   assert.equal(promoted.body.releaseDate, '2027-01-01');
@@ -819,13 +819,12 @@ test('HTTP routes enforce body validation, authentication, revocation and login 
     .delete('/api/series/' + createdSeries.body.id)
     .auth(token, { type: 'bearer' })
     .expect(200);
-  const toDelete = await http
-    .post('/api/wishlist')
-    .auth(token, { type: 'bearer' })
-    .send({ kind: 'movie', name: 'Delete me', addedDate: '2026-10-01' })
-    .expect(201);
+  const toDelete = await titles.create(
+    { kind: 'movie', name: 'Delete me', addedDate: '2026-10-01' },
+    'wishlist',
+  );
   await http
-    .delete('/api/wishlist/' + toDelete.body.id)
+    .delete('/api/wishlist/' + toDelete.id)
     .auth(token, { type: 'bearer' })
     .expect(200);
   await db.execute({
@@ -871,7 +870,7 @@ test('migration refuses a newer text ledger without changing records', async (t)
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    6,
+    7,
   );
 });
 

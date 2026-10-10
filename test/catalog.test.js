@@ -1,4 +1,4 @@
-const { WishlistService } = require('../src/modules/wishlist/wishlist.service');
+const { validateTitleMetadata } = require('../src/common/title-validation');
 const { TitlesService } = require('../src/shared/titles/titles.service');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -36,7 +36,7 @@ async function setup(t, initialize = true) {
   });
   if (initialize) await initializeDatabase(client);
   const titles = new TitlesService(new TitlesRepository({ client }));
-  const wishlist = new WishlistService(titles);
+  const movies = new MoviesService(new MoviesRepository({ client }));
   return {
     client,
     catalog: {
@@ -45,10 +45,34 @@ async function setup(t, initialize = true) {
       findOne: titles.findOne.bind(titles),
       findAll: titles.findAll.bind(titles),
       delete: titles.delete.bind(titles),
-      promote: wishlist.promote.bind(wishlist),
+      promote: async (id, addedDate) => {
+        const title = await titles.findOne(id, 'wishlist');
+        if (title.kind === 'series')
+          return titles.create(
+            { ...payload(title), addedDate, wishlistId: id },
+            'library',
+            true,
+          );
+        const option = await client.execute({
+          sql: 'SELECT q.value AS quality,e.value AS extension FROM title_formats f JOIN qualities q ON q.id=f.quality_id JOIN extensions e ON e.id=f.extension_id WHERE f.title_id=? LIMIT 1',
+          args: [id],
+        });
+        await movies.create({
+          ...validateTitleMetadata(title),
+          year: title.year,
+          movieLength: title.movieLength,
+          rating: title.rating,
+          kpId: title.kpId === null ? null : Number(title.kpId),
+          isSeries: false,
+          ...option.rows[0],
+          addedDate,
+          wishlistId: id,
+        });
+        return titles.findOne(id, 'library');
+      },
     },
     settings: new SettingsService(new SettingsRepository({ client })),
-    movies: new MoviesService(new MoviesRepository({ client })),
+    movies,
   };
 }
 function payload(title) {
@@ -320,11 +344,9 @@ test('cross-collection provider conflicts are serialized and do not leave orphan
     catalog.create(draft, 'wishlist'),
     catalog.create(draft, 'library', true),
   ]);
-  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
-  assert.equal(
-    results.find((r) => r.status === 'rejected').reason.getStatus(),
-    409,
-  );
+  assert.ok(results.some((r) => r.status === 'fulfilled'));
+  for (const result of results.filter((r) => r.status === 'rejected'))
+    assert.equal(result.reason.getStatus(), 409);
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM titles')).rows[0].n,
     1,
@@ -736,7 +758,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   );
   const before = (await client.execute('SELECT * FROM titles')).rows;
   await client.executeMultiple(
-    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes','catalog-v7-refresh-sessions'); DROP TABLE auth_refresh_tokens; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
+    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes','catalog-v7-refresh-sessions','catalog-v8-wishlist-refresh'); DROP TRIGGER title_metadata_updated; DROP TABLE title_metadata_revisions; DROP TABLE auth_refresh_tokens; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
   );
   await assert.rejects(assertDatabaseVersion(client), /schema version/);
   await initializeDatabase(client);
@@ -756,7 +778,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    5,
+    6,
   );
   await assertDatabaseVersion(client);
 });

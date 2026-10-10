@@ -194,8 +194,9 @@ function releaseYears(value: unknown): KinopoiskFilmDto['releaseYears'] {
   if (ranges.length > 200) throw invalid('releaseYears');
   return ranges.map((item) => {
     const record = asRecord(item, 'releaseYears');
-    const start = optionalNumber(record['start'], 'start');
-    // Provider uses zero for an unknown series end; zero is not a calendar year.
+    // Provider uses zero for either unknown range boundary, not a calendar year.
+    const start =
+      record['start'] === 0 ? null : optionalNumber(record['start'], 'start');
     const end =
       record['end'] === 0 ? null : optionalNumber(record['end'], 'end');
     if (start != null && end != null && end < start)
