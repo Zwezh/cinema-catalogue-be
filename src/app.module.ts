@@ -1,3 +1,4 @@
+import { StatisticsModule } from './modules/statistics/statistics.module';
 import { GalleryModule } from './modules/gallery/gallery.module';
 import { SeriesModule } from './modules/series/series.module';
 import { WishlistModule } from './modules/wishlist/wishlist.module';
@@ -20,6 +21,7 @@ import { AuthModule, MoviesModule, SettingsModule } from './modules';
     SeriesModule,
     WishlistModule,
     GalleryModule,
+    StatisticsModule,
   ],
   controllers: [AppController],
 })

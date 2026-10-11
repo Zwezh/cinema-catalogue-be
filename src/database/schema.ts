@@ -15,7 +15,7 @@ import type {
   ExtensionOptionRecord,
 } from './legacy-schema';
 
-export const databaseSchemaVersion = 8;
+export const databaseSchemaVersion = 9;
 export const settingsId = 'settings:default';
 export { optionId } from '../shared/titles/catalog-options';
 import { optionId } from '../shared/titles/catalog-options';

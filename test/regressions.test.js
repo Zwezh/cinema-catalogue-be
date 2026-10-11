@@ -870,7 +870,7 @@ test('migration refuses a newer text ledger without changing records', async (t)
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    7,
+    8,
   );
 });
 
