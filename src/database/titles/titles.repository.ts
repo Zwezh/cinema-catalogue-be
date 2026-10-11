@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import type { Transaction } from '@libsql/client';
 import { DatabaseService } from '../database.service';
 import { normalizeSearch, substringPattern } from '../search';
-import type { PaginationParamsDto } from '../../common/pagination-params';
+import type { TitleListParams } from '../../shared/titles/title-list-query';
 import { TitleInputError } from '../../shared/titles/title.errors';
 import { assertProviderId, syncGenres } from './title-writer';
 import type {
@@ -115,7 +115,7 @@ export class TitlesRepository {
     }
   }
   async findAll(
-    query: PaginationParamsDto,
+    query: TitleListParams,
     membership: Membership,
     seriesOnly = false,
   ) {
@@ -134,6 +134,16 @@ export class TitlesRepository {
       throw new TitleInputError('Unsupported catalog sort key');
     const args: (string | number)[] = [];
     const conditions = seriesOnly ? ["t.kind='series'"] : [];
+    if (seriesOnly && query.productionStatus !== undefined) {
+      conditions.push(
+        'EXISTS(SELECT 1 FROM series_details d WHERE d.title_id=t.id AND d.production_status=?)',
+      );
+      args.push(query.productionStatus);
+    }
+    if (seriesOnly && query.seasonAvailability === 'incomplete')
+      conditions.push(
+        'EXISTS(SELECT 1 FROM seasons s WHERE s.series_id=t.id AND s.season_number>0 AND s.is_available=0)',
+      );
     if (query.search) {
       conditions.push("t.name_search LIKE ? ESCAPE '\\'");
       args.push(substringPattern(query.search));

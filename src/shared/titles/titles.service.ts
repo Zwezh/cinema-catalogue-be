@@ -12,7 +12,7 @@ import {
 } from './title.errors';
 import { text } from '../../common/validation';
 import { validateTitle } from './title-validation';
-import { validateTitleQuery } from '../../common/title-query-validation';
+import { validateTitleListQuery } from './title-list-query';
 import type { Membership } from './title.types';
 
 @Injectable()
@@ -43,7 +43,7 @@ export class TitlesService {
     );
   }
   findAll(value: unknown, membership: Membership, seriesOnly = false) {
-    const query = validateTitleQuery(value);
+    const query = validateTitleListQuery(value, seriesOnly);
     return this.execute(() =>
       this.repository.findAll(query, membership, seriesOnly),
     );

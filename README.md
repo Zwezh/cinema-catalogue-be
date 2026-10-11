@@ -193,3 +193,6 @@ descriptions completed in approximately 0.7 seconds with the covering index;
 production timings depend on the database and network. Apply `npm run migrate`
 to the approved target database before restarting the new build when automatic
 migration is disabled. Migration creates no snapshot or sample statistics.
+
+
+Series list query filters: `GET /api/series?productionStatus=finished&seasonAvailability=incomplete`. Production status accepts `unknown`, `in_production`, or `finished`. `incomplete` matches at least one recorded regular season (`season_number > 0`) marked unavailable; missing future seasons and specials alone do not match. Both predicates combine with existing filters before counting and pagination. These parameters are Series-only and are ignored by Movie/Wishlist query parsing. No schema migration is required.
