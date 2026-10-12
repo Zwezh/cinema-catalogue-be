@@ -9,6 +9,7 @@ export const catalogMigrationIds = [
   'catalog-v6-sort-indexes',
   'catalog-v7-refresh-sessions',
   'catalog-v8-wishlist-refresh',
+  'catalog-v9-statistics',
 ] as const;
 
 export async function upgradeCatalog(client: Client): Promise<void> {
@@ -62,6 +63,18 @@ export async function upgradeCatalog(client: Client): Promise<void> {
         'CREATE TABLE title_metadata_revisions (title_id TEXT PRIMARY KEY REFERENCES titles(id) ON DELETE CASCADE, revision INTEGER NOT NULL)',
         `CREATE TRIGGER title_metadata_updated AFTER UPDATE ON titles BEGIN INSERT INTO title_metadata_revisions VALUES(NEW.id,1) ON CONFLICT(title_id) DO UPDATE SET revision=revision+1; END`,
         "INSERT INTO catalog_migrations VALUES('catalog-v8-wishlist-refresh',strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+      ]);
+    }
+    if (versions.rows.length < 7) {
+      await tx.batch([
+        'CREATE INDEX titles_statistics ON titles(kind,movie_length,rating,year_json,id)',
+        `CREATE TABLE library_statistics_snapshot (
+          id TEXT PRIMARY KEY CHECK (id='library'),
+          schema_version INTEGER NOT NULL CHECK (schema_version=1),
+          scanned_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
+        ) STRICT, WITHOUT ROWID`,
+        "INSERT INTO catalog_migrations VALUES('catalog-v9-statistics',strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
       ]);
     }
   });

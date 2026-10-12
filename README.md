@@ -165,3 +165,34 @@ after any running background sync, so a completed library save cannot acknowledg
 an older replica snapshot. Sync failures do not undo an already committed write.
 Restart the backend after building these changes; an already blocked process
 cannot load the fix from the rebuilt files.
+
+
+## Persisted Library statistics
+
+Public `GET /api/statistics` returns `{snapshot:null}` until the first successful
+scan, then returns `{snapshot:...}` from the primary database. It reads one saved
+row and never recalculates metrics on page open. Authenticated
+`POST /api/statistics/scan` accepts an empty body and returns the committed
+snapshot. Both endpoints reject query parameters.
+
+Scans include Library Movies and Series only, excluding Wishlist-only titles.
+Six SQL aggregates and a snapshot UPSERT run in one primary write transaction.
+Concurrent scans serialize; a failure rolls back and preserves the previous
+snapshot. Catalog changes do not automatically refresh it. The response includes
+a UTC scan timestamp, title counts, known Movie runtime coverage, recorded and
+available regular seasons, genres, quality buckets, release decades and exact
+rating distributions/mean/median. Available specials contribute to quality;
+unavailable seasons do not. Genres can overlap; each title has exactly one quality
+bucket (one quality, multiple qualities, or no available quality). No file sizes
+or episode estimates are computed.
+
+Schema version 9 adds the singleton `library_statistics_snapshot` table and the
+`titles_statistics` covering index. Aggregation selects compact indexed metadata,
+not full title DTOs or descriptions. An isolated 10,000-title fixture with 2 KB
+descriptions completed in approximately 0.7 seconds with the covering index;
+production timings depend on the database and network. Apply `npm run migrate`
+to the approved target database before restarting the new build when automatic
+migration is disabled. Migration creates no snapshot or sample statistics.
+
+
+Series list query filters: `GET /api/series?productionStatus=finished&seasonAvailability=incomplete`. Production status accepts `unknown`, `in_production`, or `finished`. `incomplete` matches at least one recorded regular season (`season_number > 0`) marked unavailable; missing future seasons and specials alone do not match. Both predicates combine with existing filters before counting and pagination. These parameters are Series-only and are ignored by Movie/Wishlist query parsing. No schema migration is required.

@@ -758,7 +758,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   );
   const before = (await client.execute('SELECT * FROM titles')).rows;
   await client.executeMultiple(
-    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes','catalog-v7-refresh-sessions','catalog-v8-wishlist-refresh'); DROP TRIGGER title_metadata_updated; DROP TABLE title_metadata_revisions; DROP TABLE auth_refresh_tokens; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
+    "DELETE FROM catalog_migrations WHERE id IN ('catalog-v4-provider-index','catalog-v5-page-indexes','catalog-v6-sort-indexes','catalog-v7-refresh-sessions','catalog-v8-wishlist-refresh','catalog-v9-statistics'); DROP INDEX titles_statistics; DROP TABLE library_statistics_snapshot; DROP TRIGGER title_metadata_updated; DROP TABLE title_metadata_revisions; DROP TABLE auth_refresh_tokens; DROP INDEX idx_titles_provider_canonical; DROP TABLE login_attempts; DROP INDEX titles_kind_name; DROP INDEX titles_kind_name_desc; DROP INDEX titles_kind_rating; DROP INDEX titles_kind_rating_desc; DROP INDEX titles_kind_year; DROP INDEX titles_kind_year_desc;",
   );
   await assert.rejects(assertDatabaseVersion(client), /schema version/);
   await initializeDatabase(client);
@@ -778,7 +778,7 @@ test('v4 upgrade preserves title data and catalog IDs and indexes canonical prov
   assert.equal(
     (await client.execute('SELECT COUNT(*) AS n FROM catalog_migrations'))
       .rows[0].n,
-    6,
+    7,
   );
   await assertDatabaseVersion(client);
 });
@@ -808,5 +808,86 @@ test('legacy series unknown year bounds survive reads without changing stored JS
   assert.throws(
     () => validateTitle({ ...draft, year: [2020, null] }),
     (e) => e.getStatus() === 400,
+  );
+});
+
+test('Series filters combine production status and unavailable recorded regular seasons before pagination', async (t) => {
+  const { catalog } = await setup(t);
+  const create = (kpId, productionStatus, seasons) =>
+    catalog.create(
+      {
+        ...draft,
+        kpId,
+        genres: ['Drama'],
+        series: { productionStatus, announcedSeasonCount: 10, seasons },
+      },
+      'library',
+      true,
+    );
+  const missing = await create('701', 'finished', [
+    { seasonNumber: 1, isAvailable: true },
+    { seasonNumber: 2, isAvailable: false },
+  ]);
+  await create('702', 'finished', [
+    { seasonNumber: 0, isAvailable: false },
+    { seasonNumber: 1, isAvailable: true },
+  ]);
+  await create('703', 'in_production', [
+    { seasonNumber: 1, isAvailable: false },
+  ]);
+  await create('704', 'unknown', []);
+  assert.equal(
+    (await catalog.findAll({ productionStatus: 'finished' }, 'library', true))
+      .totalCount,
+    2,
+  );
+  assert.equal(
+    (
+      await catalog.findAll(
+        { seasonAvailability: 'incomplete' },
+        'library',
+        true,
+      )
+    ).totalCount,
+    2,
+  );
+  const query = {
+    productionStatus: 'finished',
+    seasonAvailability: 'incomplete',
+    genres: 'Drama',
+    pageSize: 1,
+  };
+  const page = await catalog.findAll(query, 'library', true);
+  assert.equal(page.totalCount, 1);
+  assert.deepEqual(
+    page.list.map((title) => title.id),
+    [missing.id],
+  );
+  const next = await catalog.findAll(
+    { ...query, currentPage: 1 },
+    'library',
+    true,
+  );
+  assert.equal(next.totalCount, 1);
+  assert.deepEqual(next.list, []);
+  assert.equal(
+    (await catalog.findAll({ productionStatus: 'unknown' }, 'library', true))
+      .totalCount,
+    1,
+  );
+  for (const bad of [
+    { productionStatus: 'ongoing' },
+    { productionStatus: ['finished'] },
+    { seasonAvailability: true },
+    { seasonAvailability: 'complete' },
+  ])
+    await assert.rejects(
+      async () => catalog.findAll(bad, 'library', true),
+      (e) => e.getStatus() === 400,
+    );
+  assert.equal(
+    (await catalog.findAll({ productionStatus: 'finished' }, 'wishlist'))
+      .totalCount,
+    0,
   );
 });
